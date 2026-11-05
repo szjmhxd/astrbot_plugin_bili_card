@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #14161c;
+    --muted: #6b7280;
+    --faint: #9aa3b2;
+    --line: #eef0f5;
+    --cell: #fafbfd;
+    --shadow: 0 6px 28px rgba(17, 20, 30, 0.09);
+  }
+  .dark {
+    --bg: #1b1d23;
+    --fg: #eceef3;
+    --muted: #9aa2b1;
+    --faint: #6f7788;
+    --line: #2b2f39;
+    --cell: #22252d;
+    --shadow: 0 6px 28px rgba(0, 0, 0, 0.45);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+      "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei",
+      "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body { width: 660px; }
+
+  .card {
+    width: 660px;
+    background: var(--bg);
+    color: var(--fg);
+    border-radius: 18px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    border: 1px solid var(--line);
+  }
+
+  /* ---------- 顶部视觉区 ---------- */
+  .hero { position: relative; width: 100%; background: var(--cell); }
+  .hero img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+
+  .hero-avatar {
+    padding: 24px 20px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .hero-avatar img {
+    width: 92px; height: 92px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid var(--bg);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.16);
+  }
+
+  .badge {
+    position: absolute;
+    top: 14px; left: 14px;
+    padding: 5px 13px;
+    border-radius: 999px;
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    color: #fff;
+    background: var(--accent);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  }
+
+  .chip {
+    position: absolute;
+    right: 14px; bottom: 14px;
+    padding: 3px 9px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.62);
+    backdrop-filter: blur(4px);
+    font-variant-numeric: tabular-nums;
+  }
+  .chip.live { background: #fb2c5b; }
+
+  /* ---------- 正文 ---------- */
+  .body { padding: 20px 22px 18px; }
+  .title {
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1.45;
+    letter-spacing: 0.2px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+  }
+  .subtitle {
+    margin-top: 7px;
+    font-size: 13.5px;
+    color: var(--muted);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .author {
+    margin-top: 15px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .author img {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--cell);
+    flex: 0 0 auto;
+  }
+  .author .name {
+    font-size: 14px;
+    font-weight: 600;
+    max-width: 480px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .author .sep { color: var(--faint); font-size: 12px; }
+
+  .desc {
+    margin-top: 14px;
+    font-size: 13px;
+    line-height: 1.72;
+    color: var(--muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 5;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* ---------- 数据 ---------- */
+  .stats {
+    margin-top: 16px;
+    display: grid;
+    grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .stat {
+    background: var(--cell);
+    padding: 10px 6px 9px;
+    text-align: center;
+  }
+  .stat .v {
+    font-size: 15.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.2px;
+  }
+  .stat .k {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--faint);
+    letter-spacing: 0.5px;
+  }
+
+  /* ---------- 标签 ---------- */
+  .tags { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 7px; }
+  .tag {
+    font-size: 11.5px;
+    color: var(--muted);
+    background: var(--cell);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 3px 8px;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---------- 底部链接条 ---------- */
+  .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 13px 22px;
+    border-top: 1px solid var(--line);
+    background: var(--cell);
+  }
+  .foot .link {
+    font-size: 12.5px;
+    color: var(--accent);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .foot .cta {
+    font-size: 11.5px;
+    color: var(--faint);
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+</style>
+</head>
+<body class="{{ theme }}">
+  <div class="card" style="--accent: {{ c.accent }}; --cols: {{ c.stat_cols }};">
+
+    {# ---------- 顶部视觉 ---------- #}
+    {% if c.hero == 'cover' and c.cover %}
+    <div class="hero">
+      <img src="{{ c.cover }}" alt="" />
+      <div class="badge">{{ c.badge | e }}</div>
+      {% if c.cover_chip %}
+      <div class="chip {{ 'live' if c.chip_live else '' }}">{{ c.cover_chip | e }}</div>
+      {% endif %}
+    </div>
+    {% elif c.hero == 'avatar' and c.cover %}
+    <div class="hero hero-avatar">
+      <img src="{{ c.cover }}" alt="" />
+      <div class="badge">{{ c.badge | e }}</div>
+    </div>
+    {% endif %}
+
+    <div class="body">
+      {# ---------- 标题 ---------- #}
+      <div class="title">{{ c.title | e }}</div>
+      {% if c.subtitle %}
+      <div class="subtitle">{{ c.subtitle | e }}</div>
+      {% endif %}
+
+      {# ---------- 作者 ---------- #}
+      {% if c.author or c.highlight %}
+      <div class="author">
+        {% if c.avatar and c.hero != 'avatar' %}
+        <img src="{{ c.avatar }}" alt="" />
+        {% endif %}
+        {% if c.author %}
+        <div class="name">{{ c.author | e }}</div>
+        {% endif %}
+        {% if c.highlight %}
+        <div class="sep">·</div>
+        <div class="name" style="font-weight:500;color:{{ c.accent }};">{{ c.highlight | e }}</div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {# ---------- 简介 ---------- #}
+      {% if c.desc %}
+      <div class="desc">{{ c.desc | e }}</div>
+      {% endif %}
+
+      {# ---------- 数据 ---------- #}
+      {% if c.stats %}
+      <div class="stats">
+        {% for s in c.stats %}
+        <div class="stat">
+          <div class="v">{{ s.value | e }}</div>
+          <div class="k">{{ s.label | e }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {# ---------- 标签 ---------- #}
+      {% if c.tags %}
+      <div class="tags">
+        {% for t in c.tags %}
+        <span class="tag">{{ t | e }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="foot">
+      <div class="link">{{ (c.link_label or c.link) | e }}</div>
+      <div class="cta">bilibili</div>
+    </div>
+  </div>
+</body>
+</html>

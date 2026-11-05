@@ -1,0 +1,687 @@
+"""B 站接口客户端。
+
+职责
+----
+* 统一维护 aiohttp 会话、请求头、超时、Cookie、代理
+* WBI 密钥的获取与缓存
+* 短链展开
+* **图片转内联 data URI**——这一步决定了卡片能不能正常显示
+
+关于图片为什么要内联
+--------------------
+B 站图床 ``i0.hdslb.com`` 有 Referer 防盗链。如果直接把远程图片地址写进待渲染的
+HTML，Playwright 加载时没有正确的 Referer，结果就是白块。因此这里先把图片下载下来，
+再以 base64 内联，渲染阶段完全不产生外部请求。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+from typing import Any
+
+import aiohttp
+
+from .models import BiliError, CardData, Stat
+from .wbi import WbiKeyCache, enc_wbi
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+API = "https://api.bilibili.com"
+LIVE_API = "https://api.live.bilibili.com"
+AUDIO_API = "https://api.bilibili.com"
+
+# 常见错误码到人话的映射
+_ERR_TEXT = {
+    -400: "请求参数有误",
+    -403: "访问被拒绝",
+    -404: "内容不存在或已被删除",
+    -352: "触发了 B 站风控，请稍后再试",
+    -412: "请求被风控拦截，请稍后再试",
+    62002: "稿件不可见",
+    62004: "稿件正在审核中",
+    87007: "充电专属内容，暂不支持",
+    87008: "大会员专属内容，暂不支持",
+}
+
+# 单张图片的体积上限，超过就放弃内联（封面空白但文字照常显示）
+_MAX_IMAGE_BYTES = 6 * 1024 * 1024
+
+
+def fmt_num(value: Any) -> str:
+    """把播放量这类大数字缩写成 万 / 亿。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return "0"
+    if n >= 100_000_000:
+        return f"{n / 100_000_000:.1f}亿".replace(".0亿", "亿")
+    if n >= 10_000:
+        return f"{n / 10_000:.1f}万".replace(".0万", "万")
+    return str(n)
+
+
+def fmt_duration(seconds: Any) -> str:
+    """秒数转 3:07 / 1:02:33。"""
+    try:
+        total = int(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if total <= 0:
+        return ""
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _clip(text: Any, limit: int) -> str:
+    """截断长文本，保留完整词边界附近的字符。"""
+    if not text:
+        return ""
+    s = str(text).replace("\r", "").strip()
+    if len(s) <= limit:
+        return s
+    return s[: max(1, limit - 1)].rstrip() + "…"
+
+
+class BiliClient:
+    """所有网络访问的唯一出口。"""
+
+    def __init__(
+        self,
+        *,
+        sessdata: str = "",
+        proxy_url: str = "",
+        timeout: int = 10,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self._sessdata = (sessdata or "").strip()
+        self._proxy = (proxy_url or "").strip()
+        self._timeout = max(3, int(timeout))
+        self._log = logger or logging.getLogger(__name__)
+        self._session: aiohttp.ClientSession | None = None
+        self._wbi = WbiKeyCache()
+        self._wbi_lock = asyncio.Lock()
+
+    # ------------------------------------------------------------------
+    # 会话
+    # ------------------------------------------------------------------
+
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._session is not None and not self._session.closed:
+            return self._session
+        jar = aiohttp.CookieJar()
+        headers = {
+            "User-Agent": UA,
+            "Referer": "https://www.bilibili.com/",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        }
+        if self._sessdata:
+            # 只放 SESSDATA，其余 Cookie 由 aiohttp 自行管理
+            jar.update_cookies({"SESSDATA": self._sessdata}, response_url=aiohttp.helpers.URL(API))
+        self._session = aiohttp.ClientSession(
+            headers=headers,
+            cookie_jar=jar,
+            timeout=aiohttp.ClientTimeout(total=self._timeout),
+        )
+        return self._session
+
+    async def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+        self._session = None
+
+    async def _request_json(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        *,
+        wbi: bool = False,
+    ) -> dict[str, Any]:
+        params = dict(params or {})
+        if wbi:
+            await self._ensure_wbi()
+            params = enc_wbi(params, self._wbi.img_key, self._wbi.sub_key)
+
+        session = await self._ensure_session()
+        try:
+            async with session.get(url, params=params, proxy=self._proxy or None) as resp:
+                if resp.status != 200:
+                    raise BiliError(f"接口返回 HTTP {resp.status}")
+                data = await resp.json(content_type=None)
+        except TimeoutError as exc:
+            raise BiliError("请求 B 站超时，请稍后再试") from exc
+        except aiohttp.ClientError as exc:
+            raise BiliError(f"网络异常：{exc.__class__.__name__}") from exc
+        except ValueError as exc:
+            raise BiliError("B 站返回了无法解析的数据") from exc
+
+        code = data.get("code", 0)
+        if code != 0:
+            raise BiliError(_ERR_TEXT.get(code, f"B 站接口错误（code={code}）"))
+        return data
+
+    async def _ensure_wbi(self) -> None:
+        """按需刷新 WBI 密钥，加锁避免并发请求重复拉取。"""
+        if self._wbi.ready and not self._wbi.expired:
+            return
+        async with self._wbi_lock:
+            if self._wbi.ready and not self._wbi.expired:
+                return
+            data = await self._request_json(f"{API}/x/web-interface/nav")
+            img_url = (((data.get("data") or {}).get("wbi_img") or {}).get("img_url")) or ""
+            sub_url = (((data.get("data") or {}).get("wbi_img") or {}).get("sub_url")) or ""
+            if not img_url or not sub_url:
+                raise BiliError("无法获取 B 站签名密钥")
+            self._wbi.update(img_url, sub_url)
+
+    # ------------------------------------------------------------------
+    # 图片内联
+    # ------------------------------------------------------------------
+
+    async def inline_image(self, url: str) -> str:
+        """下载图片并转成 data URI；失败返回空串，不抛异常。"""
+        if not url:
+            return ""
+        clean = url.split("@", 1)[0]
+        if clean.startswith("//"):
+            clean = "https:" + clean
+        elif clean.startswith("http://"):
+            clean = "https://" + clean[len("http://") :]
+
+        session = await self._ensure_session()
+        try:
+            async with session.get(
+                clean,
+                headers={"Referer": "https://www.bilibili.com/"},
+                proxy=self._proxy or None,
+                timeout=aiohttp.ClientTimeout(total=12),
+            ) as resp:
+                if resp.status != 200:
+                    return ""
+                if resp.content_length and resp.content_length > _MAX_IMAGE_BYTES:
+                    return ""
+                blob = await resp.content.read(_MAX_IMAGE_BYTES + 1)
+                if len(blob) > _MAX_IMAGE_BYTES:
+                    return ""
+                mime = (resp.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        except (TimeoutError, aiohttp.ClientError) as exc:
+            self._log.debug("图片下载失败 %s: %s", clean, exc)
+            return ""
+
+        if not mime.startswith("image/"):
+            return ""
+        return f"data:{mime};base64,{base64.b64encode(blob).decode()}"
+
+    # ------------------------------------------------------------------
+    # 短链
+    # ------------------------------------------------------------------
+
+    async def resolve_short(self, url: str) -> str:
+        """展开 b23.tv 短链，返回 Location 指向的真实地址。"""
+        session = await self._ensure_session()
+        try:
+            # 关闭自动跳转，直接读 Location，避免跟到最终页面浪费流量
+            async with session.get(
+                url,
+                allow_redirects=False,
+                proxy=self._proxy or None,
+            ) as resp:
+                location = resp.headers.get("Location") or ""
+                if not location and resp.status == 200:
+                    # 少数情况下返回 200 并由前端跳转，退化为读正文里的链接
+                    text = await resp.text()
+                    import re
+
+                    m = re.search(r"https?://(?:www\.)?bilibili\.com/[^\s\"'<>]+", text)
+                    return m.group(0) if m else ""
+                return location
+        except (TimeoutError, aiohttp.ClientError) as exc:
+            raise BiliError("短链展开失败，请直接发完整链接") from exc
+
+    # ------------------------------------------------------------------
+    # 八类内容抓取
+    # ------------------------------------------------------------------
+
+    async def fetch(self, kind: str, key: str, **extra: Any) -> CardData:
+        handler = {
+            "video": self.fetch_video,
+            "bangumi": self.fetch_bangumi,
+            "live": self.fetch_live,
+            "article": self.fetch_article,
+            "opus": self.fetch_opus,
+            "space": self.fetch_space,
+            "audio": self.fetch_audio,
+            "comment": self.fetch_comment,
+        }.get(kind)
+        if handler is None:
+            raise BiliError(f"暂不支持的类型：{kind}")
+        return await handler(key, **extra)
+
+    # ---- 视频 ----
+
+    async def fetch_video(self, key: str, page: str = "1", **_kw: Any) -> CardData:
+        params = {"bvid": key} if key.upper().startswith("BV") else {"aid": key.lstrip("avAV")}
+        data = await self._request_json(f"{API}/x/web-interface/view", params)
+        d = data.get("data") or {}
+        if not d:
+            raise BiliError("视频不存在或已被删除")
+
+        bvid = d.get("bvid") or key
+        total_p = int(d.get("videos") or 1)
+        try:
+            p_index = max(1, min(int(page or 1), total_p))
+        except ValueError:
+            p_index = 1
+
+        subtitle = ""
+        if total_p > 1:
+            pages = d.get("pages") or []
+            part = ""
+            if 0 < p_index <= len(pages):
+                part = (pages[p_index - 1] or {}).get("part") or ""
+            subtitle = f"P{p_index}/{total_p}" + (f" · {part}" if part else "")
+
+        stat = d.get("stat") or {}
+        owner = d.get("owner") or {}
+        link = f"https://www.bilibili.com/video/{bvid}"
+        if total_p > 1:
+            link += f"?p={p_index}"
+
+        return CardData(
+            kind="video",
+            title=_clip(d.get("title"), 120),
+            subtitle=subtitle,
+            cover=await self.inline_image(d.get("pic") or ""),
+            avatar=await self.inline_image(owner.get("face") or ""),
+            author=owner.get("name") or "",
+            author_link=f"https://space.bilibili.com/{owner.get('mid')}"
+            if owner.get("mid")
+            else "",
+            desc=_clip(d.get("desc"), 200),
+            stats=[
+                Stat("播放", fmt_num(stat.get("view"))),
+                Stat("点赞", fmt_num(stat.get("like"))),
+                Stat("投币", fmt_num(stat.get("coin"))),
+                Stat("收藏", fmt_num(stat.get("favorite"))),
+                Stat("评论", fmt_num(stat.get("reply"))),
+                Stat("分享", fmt_num(stat.get("share"))),
+            ],
+            tags=[
+                t
+                for t in (
+                    d.get("tname") or "",
+                    fmt_duration(d.get("duration")),
+                    "原创" if d.get("copyright") == 1 else "转载",
+                )
+                if t
+            ],
+            link=link,
+            link_label=f"BV{bvid[2:]}" if bvid.upper().startswith("BV") else bvid,
+        )
+
+    # ---- 番剧 ----
+
+    async def fetch_bangumi(self, key: str, mode: str = "ep", **_kw: Any) -> CardData:
+        param_name = {"ep": "ep_id", "ss": "season_id", "md": "media_id"}.get(mode, "ep_id")
+        data = await self._request_json(f"{API}/pgc/view/web/season", {param_name: key})
+        r = data.get("result") or {}
+        if not r:
+            raise BiliError("番剧不存在或已下架")
+
+        episodes = r.get("episodes") or []
+        current: dict[str, Any] = {}
+        if mode == "ep":
+            current = next((e for e in episodes if str(e.get("ep_id")) == str(key)), {})
+
+        # 单集视角优先用当集封面与标题
+        cover_url = current.get("cover") or r.get("cover") or ""
+        subtitle = ""
+        if current:
+            ep_title = current.get("title") or ""
+            long_title = current.get("long_title") or ""
+            subtitle = f"第{ep_title}话" + (f" {long_title}" if long_title else "")
+
+        rating = (r.get("rating") or {}).get("score")
+        stat = r.get("stat") or {}
+        ep_id = current.get("ep_id") or (episodes[0].get("ep_id") if episodes else "")
+        link = (
+            f"https://www.bilibili.com/bangumi/play/ep{ep_id}"
+            if ep_id
+            else f"https://www.bilibili.com/bangumi/media/md{r.get('media_id')}"
+        )
+
+        tags = ["番剧"]
+        if rating:
+            tags.append(f"{rating}分")
+        new_ep = (r.get("new_ep") or {}).get("desc") or ""
+        if new_ep:
+            tags.append(new_ep)
+
+        return CardData(
+            kind="bangumi",
+            title=_clip(r.get("title"), 120),
+            subtitle=subtitle,
+            cover=await self.inline_image(cover_url),
+            desc=_clip(r.get("evaluate"), 200),
+            stats=[
+                Stat("播放", fmt_num(stat.get("views"))),
+                Stat("追番", fmt_num(stat.get("favorites"))),
+                Stat("点赞", fmt_num(stat.get("likes"))),
+                Stat("投币", fmt_num(stat.get("coins"))),
+                Stat("弹幕", fmt_num(stat.get("danmakus"))),
+                Stat("分享", fmt_num(stat.get("share"))),
+            ],
+            tags=tags,
+            link=link,
+            link_label="番剧详情",
+        )
+
+    # ---- 直播 ----
+
+    async def fetch_live(self, key: str, **_kw: Any) -> CardData:
+        data = await self._request_json(f"{LIVE_API}/room/v1/Room/get_info", {"room_id": key})
+        d = data.get("data") or {}
+        if not d:
+            raise BiliError("直播间不存在")
+
+        live_status = int(d.get("live_status") or 0)
+        cover_url = d.get("keyframe") or d.get("user_cover") or ""
+
+        # 主播昵称与头像需要额外一次接口
+        uname = ""
+        face = ""
+        try:
+            info = await self._request_json(
+                f"{LIVE_API}/live_user/v1/UserInfo/get_anchor_in_room",
+                {"roomid": key},
+            )
+            base = ((info.get("data") or {}).get("info")) or {}
+            uname = base.get("uname") or ""
+            face = base.get("face") or ""
+        except BiliError:
+            # 拿不到主播信息不影响主流程
+            pass
+
+        uid = d.get("uid")
+        return CardData(
+            kind="live",
+            title=_clip(d.get("title"), 120) or "（无标题）",
+            cover=await self.inline_image(cover_url),
+            avatar=await self.inline_image(face),
+            author=uname,
+            author_link=f"https://space.bilibili.com/{uid}" if uid else "",
+            desc=_clip(d.get("description"), 160),
+            highlight="● 直播中" if live_status == 1 else "○ 未开播",
+            highlight_kind="live" if live_status == 1 else "normal",
+            stats=[
+                Stat("人气", fmt_num(d.get("online"))),
+                Stat("关注", fmt_num(d.get("attention"))),
+            ],
+            tags=[f"房间 {d.get('room_id') or key}"],
+            link=f"https://live.bilibili.com/{key}",
+            link_label="进入直播间",
+        )
+
+    # ---- 专栏 ----
+
+    async def fetch_article(self, key: str, **_kw: Any) -> CardData:
+        data = await self._request_json(f"{API}/x/article/viewinfo", {"id": key})
+        d = data.get("data") or {}
+        if not d:
+            raise BiliError("专栏不存在或已被删除")
+
+        images = d.get("image_urls") or []
+        cover_url = d.get("banner_url") or (images[0] if images else "")
+        stats = d.get("stats") or {}
+        mid = d.get("author_mid")
+
+        return CardData(
+            kind="article",
+            title=_clip(d.get("title"), 120),
+            cover=await self.inline_image(cover_url),
+            avatar=await self.inline_image(d.get("author_face") or ""),
+            author=d.get("author_name") or "",
+            author_link=f"https://space.bilibili.com/{mid}" if mid else "",
+            desc=_clip(d.get("summary"), 200),
+            stats=[
+                Stat("阅读", fmt_num(stats.get("view"))),
+                Stat("点赞", fmt_num(stats.get("like"))),
+                Stat("投币", fmt_num(stats.get("coin"))),
+                Stat("收藏", fmt_num(stats.get("favorite"))),
+                Stat("评论", fmt_num(stats.get("reply"))),
+                Stat("分享", fmt_num(stats.get("share"))),
+            ],
+            tags=["专栏"],
+            link=f"https://www.bilibili.com/read/cv{key}",
+            link_label=f"cv{key}",
+        )
+
+    # ---- 动态 ----
+
+    async def fetch_opus(self, key: str, **_kw: Any) -> CardData:
+        data = await self._request_json(
+            f"{API}/x/polymer/web-dynamic/v1/detail",
+            {"id": key, "timezone_offset": "-480"},
+            wbi=True,
+        )
+        item = (data.get("data") or {}).get("item") or {}
+        if not item:
+            raise BiliError("动态不存在或需要登录后才能查看")
+
+        modules = item.get("modules") or {}
+        author = modules.get("module_author") or {}
+        dynamic = modules.get("module_dynamic") or {}
+        stat = modules.get("module_stat") or {}
+        major = dynamic.get("major") or {}
+
+        desc_text = ((dynamic.get("desc") or {}).get("text")) or ""
+        cover_url = ""
+        extra_title = ""
+        tags: list[str] = ["动态"]
+
+        mtype = major.get("type") or ""
+
+        if mtype == "MAJOR_TYPE_OPUS":
+            opus = major.get("opus") or {}
+            desc_text = desc_text or ((opus.get("summary") or {}).get("text")) or ""
+            pics = opus.get("pics") or []
+            if pics:
+                cover_url = pics[0].get("url") or ""
+        elif mtype == "MAJOR_TYPE_DRAW":
+            draw = major.get("draw") or {}
+            items = draw.get("items") or []
+            if items:
+                cover_url = items[0].get("src") or ""
+        elif mtype == "MAJOR_TYPE_ARCHIVE":
+            archive = major.get("archive") or {}
+            extra_title = archive.get("title") or ""
+            cover_url = archive.get("cover") or ""
+            tags.append("视频")
+            play = ((archive.get("stat") or {}).get("play")) or ""
+            if play:
+                tags.append(f"播放 {fmt_num(play)}")
+        elif mtype == "MAJOR_TYPE_ARTICLE":
+            article = major.get("article") or {}
+            extra_title = article.get("title") or ""
+            covers = article.get("covers") or []
+            cover_url = covers[0] if covers else ""
+            tags.append("专栏")
+        elif mtype == "MAJOR_TYPE_LIVE_RCMD":
+            tags.append("直播")
+
+        mid = author.get("mid")
+        return CardData(
+            kind="opus",
+            title=_clip(extra_title or desc_text or "（无正文）", 120),
+            cover=await self.inline_image(cover_url),
+            avatar=await self.inline_image(author.get("face") or ""),
+            author=author.get("name") or "",
+            author_link=f"https://space.bilibili.com/{mid}" if mid else "",
+            desc=_clip(desc_text if extra_title else "", 200),
+            stats=[
+                Stat("点赞", fmt_num((stat.get("like") or {}).get("count"))),
+                Stat("评论", fmt_num((stat.get("comment") or {}).get("count"))),
+                Stat("转发", fmt_num((stat.get("forward") or {}).get("count"))),
+            ],
+            tags=tags,
+            link=f"https://www.bilibili.com/opus/{key}",
+            link_label="查看动态",
+        )
+
+    # ---- UP 主空间 ----
+
+    async def fetch_space(self, key: str, **_kw: Any) -> CardData:
+        """优先用不需要签名的 card 接口，失败再退到 wbi 的 acc/info。"""
+        name = face = sign = ""
+        level = ""
+        follower = ""
+        archives = ""
+
+        try:
+            data = await self._request_json(f"{API}/x/web-interface/card", {"mid": key})
+            d = data.get("data") or {}
+            card = d.get("card") or {}
+            name = card.get("name") or ""
+            face = card.get("face") or ""
+            sign = card.get("sign") or ""
+            level = str(((card.get("level_info") or {}).get("current_level")) or "")
+            follower = fmt_num(d.get("follower"))
+            archives = fmt_num(d.get("archive_count"))
+        except BiliError:
+            data = await self._request_json(f"{API}/x/space/wbi/acc/info", {"mid": key}, wbi=True)
+            d = data.get("data") or {}
+            name = d.get("name") or ""
+            face = d.get("face") or ""
+            sign = d.get("sign") or ""
+            level = str(d.get("level") or "")
+
+        if not name:
+            raise BiliError("该用户不存在或空间已隐藏")
+
+        return CardData(
+            kind="space",
+            title=name,
+            subtitle=sign,
+            cover=await self.inline_image(face),
+            avatar="",
+            author=f"UID {key}",
+            highlight=f"LV{level}" if level else "",
+            highlight_kind="normal",
+            desc="",
+            stats=[
+                Stat("粉丝", follower or "—"),
+                Stat("投稿", archives or "—"),
+            ],
+            tags=["UP主"],
+            link=f"https://space.bilibili.com/{key}",
+            link_label="进入空间",
+        )
+
+    # ---- 音频 / 歌单 ----
+
+    async def fetch_audio(self, key: str, mode: str = "au", **_kw: Any) -> CardData:
+        if mode == "am":
+            data = await self._request_json(
+                f"{AUDIO_API}/audio/music-service-c/web/menu/info", {"sid": key}
+            )
+            d = data.get("data") or {}
+            if not d:
+                raise BiliError("歌单不存在或已下架")
+            stat = d.get("statistic") or {}
+            songs = d.get("songs") or []
+            return CardData(
+                kind="audio",
+                title=_clip(d.get("title"), 120),
+                cover=await self.inline_image(d.get("cover") or ""),
+                author=d.get("uname") or "",
+                desc=_clip(d.get("intro"), 160),
+                stats=[
+                    Stat("播放", fmt_num(stat.get("play"))),
+                    Stat("收藏", fmt_num(stat.get("collect"))),
+                    Stat("分享", fmt_num(stat.get("share"))),
+                ],
+                tags=["歌单", f"{len(songs)} 首"],
+                link=f"https://www.bilibili.com/audio/am{key}",
+                link_label=f"am{key}",
+            )
+
+        data = await self._request_json(
+            f"{AUDIO_API}/audio/music-service-c/web/song/info", {"sid": key}
+        )
+        d = data.get("data") or {}
+        if not d:
+            raise BiliError("音频不存在或已下架")
+        stat = d.get("statistic") or {}
+        return CardData(
+            kind="audio",
+            title=_clip(d.get("title"), 120),
+            subtitle=f"歌手：{d.get('author')}" if d.get("author") else "",
+            cover=await self.inline_image(d.get("cover") or ""),
+            author=d.get("uname") or "",
+            stats=[
+                Stat("播放", fmt_num(stat.get("play"))),
+                Stat("收藏", fmt_num(stat.get("collect"))),
+                Stat("投币", fmt_num(stat.get("coin_num"))),
+                Stat("分享", fmt_num(stat.get("share"))),
+            ],
+            tags=[t for t in ("音频", fmt_duration(d.get("duration"))) if t],
+            link=f"https://www.bilibili.com/audio/au{key}",
+            link_label=f"au{key}",
+        )
+
+    # ---- 视频评论 ----
+
+    async def fetch_comment(self, key: str, root_id: str = "", **_kw: Any) -> CardData:
+        if not root_id:
+            raise BiliError("评论链接缺少 comment_root_id 参数")
+
+        # 先拿 aid，评论接口只认 oid
+        vparams = {"bvid": key} if key.upper().startswith("BV") else {"aid": key.lstrip("avAV")}
+        vdata = await self._request_json(f"{API}/x/web-interface/view", vparams)
+        vd = vdata.get("data") or {}
+        aid = vd.get("aid")
+        if not aid:
+            raise BiliError("无法定位评论所属视频")
+
+        data = await self._request_json(
+            f"{API}/x/v2/reply/reply",
+            {"oid": aid, "type": 1, "root": root_id, "ps": 3, "pn": 1},
+        )
+        d = data.get("data") or {}
+        root = d.get("root") or {}
+        if not root:
+            raise BiliError("评论不存在或已被删除")
+
+        member = root.get("member") or {}
+        message = ((root.get("content") or {}).get("message")) or ""
+        replies = d.get("replies") or []
+
+        reply_lines = [
+            f"└ {(r.get('member') or {}).get('uname', '')}："
+            f"{_clip(((r.get('content') or {}).get('message')), 50)}"
+            for r in replies[:3]
+        ]
+
+        bvid = vd.get("bvid") or key
+        return CardData(
+            kind="comment",
+            title=_clip(vd.get("title"), 80) or "视频评论",
+            subtitle=f"@{member.get('uname', '')} 的评论",
+            cover=await self.inline_image(member.get("avatar") or ""),
+            author=member.get("uname") or "",
+            desc="\n".join([_clip(message, 220), *reply_lines]),
+            stats=[
+                Stat("点赞", fmt_num(root.get("like"))),
+                Stat("回复", fmt_num(root.get("rcount"))),
+            ],
+            tags=["评论"],
+            link=f"https://www.bilibili.com/video/{bvid}#reply{root_id}",
+            link_label="查看评论",
+        )

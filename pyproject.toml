@@ -1,0 +1,10 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# BLE001 / S110：插件在消息处理、配置读取、单条链接解析这些边界上必须兜底捕获，
+# 否则一个适配器差异或一条异常内容就会把整个机器人打挂。这是刻意选择，不是疏忽。
+# UP041：AstrBot 最低支持 Python 3.10，而 3.10 的 asyncio.TimeoutError 与内置
+# TimeoutError 不是同一个类，必须显式捕获前者。
+extend-ignore = ["BLE001", "S110", "UP041"]

@@ -1,0 +1,194 @@
+{
+  "basic": {
+    "type": "object",
+    "description": "基础设置",
+    "hint": "插件的整体行为：是否自动解析、回复形态、去重与频率控制。",
+    "items": {
+      "auto_parse": {
+        "description": "自动解析链接",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，聊天中出现 B 站链接即自动解析；关闭后仅响应 /bili 指令。"
+      },
+      "reply_mode": {
+        "description": "回复形态",
+        "type": "string",
+        "options": ["card_text", "card_only", "text_only"],
+        "default": "card_text",
+        "hint": "card_text：卡片图 + 一条带链接的文字（推荐）；card_only：只发卡片图；text_only：只发文字，不渲染图片（渲染服务不可用时的退路）。"
+      },
+      "parse_limit": {
+        "description": "单条消息最多解析数",
+        "type": "int",
+        "default": 1,
+        "hint": "一条消息里出现多个 B 站链接时，只解析前 N 个，防止刷屏。取值 1-3。"
+      },
+      "cooldown_seconds": {
+        "description": "相同内容冷却（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "同一会话内重复分享同一链接时，冷却期内只解析一次。0 表示不去重。"
+      },
+      "error_hint": {
+        "description": "失败时提示",
+        "type": "bool",
+        "default": true,
+        "hint": "解析失败时是否在聊天中回一句原因。关闭后只在日志里记录，群聊更干净。"
+      }
+    }
+  },
+  "types": {
+    "type": "object",
+    "description": "解析类型开关",
+    "hint": "按内容类型分别启停。关掉某类后，该类型链接不再触发解析（不会回复任何内容）。",
+    "items": {
+      "video": {
+        "description": "视频（BV/av）",
+        "type": "bool",
+        "default": true,
+        "hint": "解析 bilibili.com/video/ 下的 BV 号与 av 号链接。"
+      },
+      "bangumi": {
+        "description": "番剧（ep/ss/md）",
+        "type": "bool",
+        "default": true,
+        "hint": "解析 bilibili.com/bangumi/play/ep 与 media/md、season/ss 链接。"
+      },
+      "live": {
+        "description": "直播间",
+        "type": "bool",
+        "default": true,
+        "hint": "解析 live.bilibili.com 链接，显示开播状态、标题、人气与关注数。"
+      },
+      "article": {
+        "description": "专栏（cv）",
+        "type": "bool",
+        "default": true,
+        "hint": "解析 bilibili.com/read/cv 链接。"
+      },
+      "opus": {
+        "description": "动态",
+        "type": "bool",
+        "default": true,
+        "hint": "解析 bilibili.com/opus/ 与 t.bilibili.com/ 链接。注意：B 站对动态接口有风控，未配置 Cookie 时可能只拿到简略数据。"
+      },
+      "space": {
+        "description": "UP 主空间",
+        "type": "bool",
+        "default": true,
+        "hint": "解析 space.bilibili.com/<UID> 链接，显示昵称、头像、签名与粉丝数。"
+      },
+      "audio": {
+        "description": "音频/歌单（au/am）",
+        "type": "bool",
+        "default": true,
+        "hint": "解析 bilibili.com/audio/au 与 am 链接。"
+      },
+      "comment": {
+        "description": "视频评论链接",
+        "type": "bool",
+        "default": true,
+        "hint": "解析带 comment_root_id 参数的视频评论链接，显示该条评论及其回复。"
+      },
+      "short_link": {
+        "description": "短链（b23.tv）",
+        "type": "bool",
+        "default": true,
+        "hint": "自动展开 b23.tv / bili2233.cn 等短链，还原真实链接后按类型解析。"
+      },
+      "json_card": {
+        "description": "QQ 小程序卡片",
+        "type": "bool",
+        "default": true,
+        "hint": "从 QQ 分享的 B 站小程序卡片（JSON/XML 结构）中提取隐藏链接并解析。仅 QQ 系适配器有效。"
+      }
+    }
+  },
+  "content": {
+    "type": "object",
+    "description": "卡片内容",
+    "hint": "控制卡片上显示哪些信息，以及卡片配色。",
+    "items": {
+      "show_cover": {
+        "description": "显示封面图",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后卡片为纯文字排版，渲染更快。"
+      },
+      "show_avatar": {
+        "description": "显示 UP 主头像",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后 UP 主一行只显示昵称。"
+      },
+      "show_stats": {
+        "description": "显示数据统计",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不显示播放、点赞、投币等数据行。"
+      },
+      "show_desc": {
+        "description": "显示简介/正文",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后卡片只保留标题与作者，更紧凑。"
+      },
+      "desc_max_chars": {
+        "description": "简介最大字符数",
+        "type": "int",
+        "default": 96,
+        "hint": "简介超出长度时截断加省略号。建议 60-140。"
+      },
+      "theme": {
+        "description": "配色",
+        "type": "string",
+        "options": ["light", "dark"],
+        "default": "light",
+        "hint": "light 浅色卡片（默认，适合日间群聊）；dark 深色卡片。"
+      }
+    }
+  },
+  "advanced": {
+    "type": "object",
+    "description": "高级设置",
+    "hint": "一般无需修改。Cookie 只影响动态与评论的完整性，不配置也能解析大部分内容。",
+    "items": {
+      "cookie_sessdata": {
+        "description": "B站 Cookie（SESSDATA）",
+        "type": "string",
+        "default": "",
+        "hint": "可选。填入浏览器登录后的 SESSDATA 值，可解锁动态完整正文、评论及部分受限内容。仅会附加到 B 站域名请求。"
+      },
+      "proxy_url": {
+        "description": "代理地址",
+        "type": "string",
+        "default": "",
+        "hint": "可选。留空直连。支持 http:// 与 socks5://（socks 需安装 aiohttp-socks）。"
+      },
+      "request_timeout": {
+        "description": "请求超时（秒）",
+        "type": "int",
+        "default": 10,
+        "hint": "单次 B 站接口请求的超时时间，建议 5-20。"
+      },
+      "blocked_groups": {
+        "description": "屏蔽的群",
+        "type": "list",
+        "default": [],
+        "hint": "这些群内完全不启用插件：不解析、不响应指令。填群号即可。"
+      },
+      "render_timeout": {
+        "description": "渲染超时（秒）",
+        "type": "int",
+        "default": 20,
+        "hint": "单张卡片渲染的超时时间。服务器性能较弱时可调大。"
+      },
+      "debug": {
+        "description": "调试日志",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后输出链接识别结果、接口响应码等排查信息。"
+      }
+    }
+  }
+}
