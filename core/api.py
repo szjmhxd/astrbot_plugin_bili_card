@@ -48,8 +48,19 @@ _ERR_TEXT = {
     87008: "大会员专属内容，暂不支持",
 }
 
+# 卡片上图片的取图尺寸（CSS 像素）。**必须按显示尺寸取图**：
+# 远端渲染服务要整段 HTML 一起收，原图 base64 动辄几百 KB，上传和解码都跟不上，
+# 截图就会拍到"只解码一半"的图片——封面只剩顶部一条、头像空白。
+# B 站图床自带缩略图参数（@720w_405h_1c.webp），封面 341KB → 39KB，头像 107KB → 2KB。
+COVER_SIZE = (720, 405)  # 16:9 封面
+AVATAR_SIZE = (96, 96)  # 作者行 30px、空间卡 92px 都够用
+BIG_AVATAR_SIZE = (192, 192)  # UP 空间卡顶部的方形头像
+
 # 单张图片的体积上限，超过就放弃内联（封面空白但文字照常显示）
-_MAX_IMAGE_BYTES = 6 * 1024 * 1024
+_MAX_IMAGE_BYTES = 2 * 1024 * 1024
+
+# 同一张头像会在多条消息里反复出现，缓存一下省掉重复下载
+_IMG_CACHE_MAX = 128
 
 
 def fmt_num(value: Any) -> str:
@@ -90,6 +101,25 @@ def _clip(text: Any, limit: int) -> str:
     return s[: max(1, limit - 1)].rstrip() + "…"
 
 
+def _normalize_image_url(url: str) -> str:
+    """统一协议，并去掉图床地址上原有的 ``@`` 尺寸参数。"""
+    if not url:
+        return ""
+    clean = url.split("@", 1)[0].strip()
+    if clean.startswith("//"):
+        return "https:" + clean
+    if clean.startswith("http://"):
+        return "https://" + clean[len("http://") :]
+    return clean if clean.startswith("https://") else ""
+
+
+def _with_thumb_suffix(url: str, width: int, height: int) -> str:
+    """给图床地址挂上缩略图参数；参数必须在查询串之前。"""
+    base, sep, query = url.partition("?")
+    spec = f"@{width}w_{height}h_1c.webp"
+    return f"{base}{spec}{sep}{query}"
+
+
 class BiliClient:
     """所有网络访问的唯一出口。"""
 
@@ -108,6 +138,7 @@ class BiliClient:
         self._session: aiohttp.ClientSession | None = None
         self._wbi = WbiKeyCache()
         self._wbi_lock = asyncio.Lock()
+        self._img_cache: dict[tuple[str, tuple[int, int]], str] = {}
 
     # ------------------------------------------------------------------
     # 会话
@@ -136,6 +167,7 @@ class BiliClient:
         if self._session is not None and not self._session.closed:
             await self._session.close()
         self._session = None
+        self._img_cache.clear()
 
     async def _request_json(
         self,
@@ -185,39 +217,63 @@ class BiliClient:
     # 图片内联
     # ------------------------------------------------------------------
 
-    async def inline_image(self, url: str) -> str:
-        """下载图片并转成 data URI；失败返回空串，不抛异常。"""
-        if not url:
+    async def inline_image(self, url: str, size: tuple[int, int] | None = None) -> str:
+        """下载图片并转成 data URI；失败返回空串，不抛异常。
+
+        ``size`` 给出时优先向图床要缩略图（``@720w_405h_1c.webp``），
+        拿不到再退回原图。缩略图能把模板体积压到原来的十分之一，
+        这是渲染速度和完整性的关键——不要把原图直接塞进模板。
+        """
+        clean = _normalize_image_url(url)
+        if not clean:
             return ""
-        clean = url.split("@", 1)[0]
-        if clean.startswith("//"):
-            clean = "https:" + clean
-        elif clean.startswith("http://"):
-            clean = "https://" + clean[len("http://") :]
+
+        key = (clean, size or (0, 0))
+        cached = self._img_cache.get(key)
+        if cached is not None:
+            return cached
+
+        blob, mime = await self._download_image(clean, size)
+        uri = f"data:{mime};base64,{base64.b64encode(blob).decode()}" if blob else ""
+
+        if len(self._img_cache) >= _IMG_CACHE_MAX:
+            self._img_cache.pop(next(iter(self._img_cache)), None)
+        self._img_cache[key] = uri
+        return uri
+
+    async def _download_image(self, url: str, size: tuple[int, int] | None) -> tuple[bytes, str]:
+        """依次尝试缩略图与原图，返回原始字节与 mime；全失败返回空。"""
+        candidates: list[str] = []
+        if size and size[0] > 0 and size[1] > 0:
+            candidates.append(_with_thumb_suffix(url, size[0], size[1]))
+        candidates.append(url)
 
         session = await self._ensure_session()
-        try:
-            async with session.get(
-                clean,
-                headers={"Referer": "https://www.bilibili.com/"},
-                proxy=self._proxy or None,
-                timeout=aiohttp.ClientTimeout(total=12),
-            ) as resp:
-                if resp.status != 200:
-                    return ""
-                if resp.content_length and resp.content_length > _MAX_IMAGE_BYTES:
-                    return ""
-                blob = await resp.content.read(_MAX_IMAGE_BYTES + 1)
-                if len(blob) > _MAX_IMAGE_BYTES:
-                    return ""
-                mime = (resp.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
-        except (TimeoutError, aiohttp.ClientError) as exc:
-            self._log.debug("图片下载失败 %s: %s", clean, exc)
-            return ""
-
-        if not mime.startswith("image/"):
-            return ""
-        return f"data:{mime};base64,{base64.b64encode(blob).decode()}"
+        for candidate in candidates:
+            try:
+                async with session.get(
+                    candidate,
+                    headers={
+                        "Referer": "https://www.bilibili.com/",
+                        "Accept": "image/webp,image/avif,image/*,*/*;q=0.8",
+                    },
+                    proxy=self._proxy or None,
+                    timeout=aiohttp.ClientTimeout(total=12),
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    if resp.content_length and resp.content_length > _MAX_IMAGE_BYTES:
+                        continue
+                    blob = await resp.content.read(_MAX_IMAGE_BYTES + 1)
+                    if not blob or len(blob) > _MAX_IMAGE_BYTES:
+                        continue
+                    mime = (resp.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+            except (TimeoutError, aiohttp.ClientError) as exc:
+                self._log.debug("图片下载失败 %s: %s", candidate, exc)
+                continue
+            if mime.startswith("image/"):
+                return blob, mime
+        return b"", ""
 
     # ------------------------------------------------------------------
     # 短链
@@ -298,8 +354,8 @@ class BiliClient:
             kind="video",
             title=_clip(d.get("title"), 120),
             subtitle=subtitle,
-            cover=await self.inline_image(d.get("pic") or ""),
-            avatar=await self.inline_image(owner.get("face") or ""),
+            cover=await self.inline_image(d.get("pic") or "", COVER_SIZE),
+            avatar=await self.inline_image(owner.get("face") or "", AVATAR_SIZE),
             author=owner.get("name") or "",
             author_link=f"https://space.bilibili.com/{owner.get('mid')}"
             if owner.get("mid")
@@ -368,7 +424,7 @@ class BiliClient:
             kind="bangumi",
             title=_clip(r.get("title"), 120),
             subtitle=subtitle,
-            cover=await self.inline_image(cover_url),
+            cover=await self.inline_image(cover_url, COVER_SIZE),
             desc=_clip(r.get("evaluate"), 200),
             stats=[
                 Stat("播放", fmt_num(stat.get("views"))),
@@ -413,8 +469,8 @@ class BiliClient:
         return CardData(
             kind="live",
             title=_clip(d.get("title"), 120) or "（无标题）",
-            cover=await self.inline_image(cover_url),
-            avatar=await self.inline_image(face),
+            cover=await self.inline_image(cover_url, COVER_SIZE),
+            avatar=await self.inline_image(face, AVATAR_SIZE),
             author=uname,
             author_link=f"https://space.bilibili.com/{uid}" if uid else "",
             desc=_clip(d.get("description"), 160),
@@ -445,8 +501,8 @@ class BiliClient:
         return CardData(
             kind="article",
             title=_clip(d.get("title"), 120),
-            cover=await self.inline_image(cover_url),
-            avatar=await self.inline_image(d.get("author_face") or ""),
+            cover=await self.inline_image(cover_url, COVER_SIZE),
+            avatar=await self.inline_image(d.get("author_face") or "", AVATAR_SIZE),
             author=d.get("author_name") or "",
             author_link=f"https://space.bilibili.com/{mid}" if mid else "",
             desc=_clip(d.get("summary"), 200),
@@ -520,8 +576,8 @@ class BiliClient:
         return CardData(
             kind="opus",
             title=_clip(extra_title or desc_text or "（无正文）", 120),
-            cover=await self.inline_image(cover_url),
-            avatar=await self.inline_image(author.get("face") or ""),
+            cover=await self.inline_image(cover_url, COVER_SIZE),
+            avatar=await self.inline_image(author.get("face") or "", AVATAR_SIZE),
             author=author.get("name") or "",
             author_link=f"https://space.bilibili.com/{mid}" if mid else "",
             desc=_clip(desc_text if extra_title else "", 200),
@@ -569,7 +625,7 @@ class BiliClient:
             kind="space",
             title=name,
             subtitle=sign,
-            cover=await self.inline_image(face),
+            cover=await self.inline_image(face, BIG_AVATAR_SIZE),
             avatar="",
             author=f"UID {key}",
             highlight=f"LV{level}" if level else "",
@@ -599,7 +655,7 @@ class BiliClient:
             return CardData(
                 kind="audio",
                 title=_clip(d.get("title"), 120),
-                cover=await self.inline_image(d.get("cover") or ""),
+                cover=await self.inline_image(d.get("cover") or "", COVER_SIZE),
                 author=d.get("uname") or "",
                 desc=_clip(d.get("intro"), 160),
                 stats=[
@@ -623,7 +679,7 @@ class BiliClient:
             kind="audio",
             title=_clip(d.get("title"), 120),
             subtitle=f"歌手：{d.get('author')}" if d.get("author") else "",
-            cover=await self.inline_image(d.get("cover") or ""),
+            cover=await self.inline_image(d.get("cover") or "", COVER_SIZE),
             author=d.get("uname") or "",
             stats=[
                 Stat("播放", fmt_num(stat.get("play"))),
@@ -674,7 +730,7 @@ class BiliClient:
             kind="comment",
             title=_clip(vd.get("title"), 80) or "视频评论",
             subtitle=f"@{member.get('uname', '')} 的评论",
-            cover=await self.inline_image(member.get("avatar") or ""),
+            cover=await self.inline_image(member.get("avatar") or "", AVATAR_SIZE),
             author=member.get("uname") or "",
             desc="\n".join([_clip(message, 220), *reply_lines]),
             stats=[

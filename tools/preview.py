@@ -388,7 +388,7 @@ def screenshot(html_path: Path, png_path: Path, browser: str) -> bool:
         "--no-first-run",
         "--no-default-browser-check",
         "--force-device-scale-factor=2",
-        "--window-size=700,2200",
+        "--window-size=800,2400",
         "--default-background-color=00000000",
         f"--user-data-dir={profile}",
         f"--screenshot={png_path}",

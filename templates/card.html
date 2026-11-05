@@ -2,6 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
+<!--
+  宿主的 html_render 会给模板无条件注入 2.4MB 的 Shiki 代码高亮运行时（它遇到下面这个
+  id 就跳过注入）。卡片里没有代码块，用不到它；不跳过的话每次渲染都要多传 2.4MB，
+  实测多花 5 秒以上，渲染服务繁忙时还会因为解码来不及而截出半张图。
+-->
+<script id="astrbot-t2i-shiki-runtime"></script>
 <style>
   :root {
     --bg: #ffffff;
@@ -29,10 +35,15 @@
       "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  body { width: 660px; }
+  /* 留一圈外边距，否则整页截图会把圆角和投影切在画面边缘上 */
+  body { width: 100%; padding: 10px 14px 14px; }
 
+  /* 渲染服务的视口宽度不固定（官方端点是 800px），卡片跟着视口走，
+     免得像定宽 660 那样右边留一条空白。 */
   .card {
-    width: 660px;
+    width: 100%;
+    max-width: 800px;
+    margin: 0 auto;
     background: var(--bg);
     color: var(--fg);
     border-radius: 18px;

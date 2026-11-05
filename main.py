@@ -37,7 +37,7 @@ from .core import (
     retarget_from_url,
 )
 
-PLUGIN_VERSION = "v1.0.0"
+PLUGIN_VERSION = "v1.0.1"
 
 ALL_TYPES = (
     "video",
@@ -59,6 +59,10 @@ RENDER_OPTIONS = {
     "animations": "disabled",
     "omit_background": True,
 }
+
+# 封面内联串的硬上限。按 720×405 的 webp 取图只有 40KB 左右（base64 约 54KB），
+# 超过这个量级说明图床没有按尺寸返回、拿的是原图，宁可不要封面也别让整段模板被截断。
+_MAX_COVER_CHARS = 350_000
 
 
 class BiliCardPlugin(Star):
@@ -231,19 +235,37 @@ class BiliCardPlugin(Star):
 
     async def _render_card(self, card: CardData) -> str:
         """返回渲染后的图片地址；失败时抛异常由上层兜底。"""
-        ctx = build_context(
-            card,
-            theme=str(self._opt("content", "theme", "light")),
-            show_cover=bool(self._opt("content", "show_cover", True)),
-            show_avatar=bool(self._opt("content", "show_avatar", True)),
-            show_stats=bool(self._opt("content", "show_stats", True)),
-            show_desc=bool(self._opt("content", "show_desc", True)),
-            desc_max_chars=int(self._opt("content", "desc_max_chars", 96) or 96),
-        )
+        content = {
+            "theme": str(self._opt("content", "theme", "light")),
+            "show_cover": bool(self._opt("content", "show_cover", True)),
+            "show_avatar": bool(self._opt("content", "show_avatar", True)),
+            "show_stats": bool(self._opt("content", "show_stats", True)),
+            "show_desc": bool(self._opt("content", "show_desc", True)),
+            "desc_max_chars": int(self._opt("content", "desc_max_chars", 96) or 96),
+        }
+        ctx = build_context(card, **content)
+
+        # 模板要整段发给渲染服务，封面内联串过大时对方会超时或截断，
+        # 与其拿到半张图，不如主动去掉封面保住文字与数据。
+        if len(ctx["cover"]) > _MAX_COVER_CHARS:
+            logger.warning(
+                "[bili_card] 封面内联过大（%.0fKB），本次不显示封面",
+                len(ctx["cover"]) / 1024,
+            )
+            content["show_cover"] = False
+            ctx = build_context(card, **content)
+
         options = dict(RENDER_OPTIONS)
         timeout = int(self._opt("advanced", "render_timeout", 20) or 20)
         options["timeout"] = timeout * 1000  # Playwright 的 timeout 单位是毫秒
-        return await self.html_render(load_template(), {"c": ctx}, options=options)
+
+        started = time.perf_counter()
+        image = await self.html_render(load_template(), {"c": ctx}, options=options)
+        cost = time.perf_counter() - started
+        if cost > 8:
+            # 慢到用户会以为没反应，留个线索方便排查是哪一段慢
+            logger.info("[bili_card] 卡片渲染耗时 %.1fs（%s）", cost, card.kind)
+        return image
 
     def _text_line(self, card: CardData) -> str:
         """卡片后补发的文字：标题 + 原始链接，方便直接复制。"""
