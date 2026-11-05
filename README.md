@@ -67,7 +67,7 @@ apt-get update && apt-get install -y fonts-noto-cjk
 
 `types` 分组下十个开关，除 `opus`（动态）外默认全开：`video` `bangumi` `live` `article` `space` `audio` `comment` `short_link` `json_card`。
 
-`opus` 默认关闭，因为 B 站动态接口强制要求登录，没填 Cookie 时必然失败；要解析动态请先填 `cookie_sessdata` 再打开这一项。
+`opus` 默认关闭。B 站动态详情接口对**公开动态**匿名可用，但仅粉丝可见、受限或命中风控的动态会返回「账号未登录」，所以这一项留给你自己决定要不要开——详见下面的 [Cookie 与登录态](#cookie-与登录态)。
 
 关掉某一类后，该类链接完全不触发，不会出现"解析了一半"的状态。
 
@@ -81,12 +81,51 @@ apt-get update && apt-get install -y fonts-noto-cjk
 
 | 配置 | 说明 |
 |---|---|
-| `cookie_sessdata` | **仅解析动态时需要**，其余类型一律不需要，不解析动态就留空 |
+| `cookie_sessdata` | **只有动态可能用得上**，其余类型一律不需要，不解析动态就留空 |
 | `proxy_url` | 直连被墙或被风控时使用。SOCKS 需额外装 `aiohttp-socks` |
 | `request_timeout` | 单次接口超时，默认 10 秒 |
 | `blocked_groups` | 这些群完全不启用插件 |
 | `render_timeout` | 单张卡片渲染超时，默认 20 秒 |
 | `debug` | 输出链接识别与接口响应的排查日志 |
+
+## Cookie 与登录态
+
+B 站绝大多数公开接口在未登录状态下就能用，所以这个插件**默认不需要任何 Cookie**，留空即可。只有一类内容例外。
+
+### 不需要 Cookie 的部分
+
+| 内容 | 用到的接口 | 说明 |
+|---|---|---|
+| 视频 | `x/web-interface/view` | 标题、简介、分 P、六项数据、封面、头像 |
+| 番剧 | `pgc/view/web/season` | 番剧信息、评分、集数、播放/追番等数据 |
+| 直播 | `room/v1/Room/get_info` + `get_anchor_in_room` | 房间信息、开播状态、人气 |
+| 专栏 | `x/article/viewinfo` | 标题、作者、阅读/点赞等 |
+| UP 空间 | `x/web-interface/card` | 昵称、签名、等级、粉丝数、投稿数 |
+| 音频 | `audio/music-service-c/web/*` | 歌曲与歌单信息 |
+| 评论卡片 | `x/v2/reply/reply` | 指定评论及其楼中楼 |
+| 热评 | `x/v2/reply?sort=2` | 视频/番剧 `type=1`、专栏 `type=12`、动态按 `comment_type` |
+| 短链展开 | `b23.tv` 的 302 跳转 | |
+| WBI 签名密钥 | `x/web-interface/nav` | 未登录时返回 `-101`，但 `wbi_img` 照样给；插件只看密钥，不看登录状态 |
+
+### 需要 SESSDATA 的部分
+
+只有**动态**，而且分两半：
+
+| 情形 | 未填 Cookie | 说明 |
+|---|---|---|
+| 公开动态 | ✅ 可解析 | 实测 `detail` 匿名返回 `code 0`，卡片字段齐全 |
+| 仅粉丝可见 / 已关注可见 / 仅自己可见 | ❌ `-101` | 必须填 `cookie_sessdata` |
+| 命中风控的动态 | ❌ `-352` / `-412` | 填了通常会好 |
+
+还有一类与登录不直接相关、但填了能缓解的情况：**同一个 IP 短时间解析太频繁**，B 站会返回 `-352` / `-412`。这不是"没 Cookie 就取不到"，而是"没 Cookie 更容易被拦"。
+
+### 怎么拿 SESSDATA
+
+浏览器登录 B 站 → F12 → Application（存储）→ Cookies → `bilibili.com` → 复制 `SESSDATA` 的值。有效期约半年，过期后动态会重新开始报 `-101`，重新复制一次即可。
+
+### 这个值是怎么用的
+
+只作为请求头里的 `Cookie: SESSDATA=...` 发给 `api.bilibili.com`：**不写日志、不进缓存、不打进卡片、也不随卡片提交给文转图端点**。其他类型的请求走同一个会话会带上它，但那些接口本身不依赖它。部署环境要求凭据不出内网的话，留空即可，只损失受限动态这一类。
 
 ## 指令
 
@@ -115,7 +154,7 @@ apt-get update && apt-get install -y fonts-noto-cjk
 
 **卡片里的链接不可点。** 图片是位图，没有超链接能力。所以 `reply_mode: card_text` 默认会在图后面补一条带原始地址的文字，这是这个默认值存在的原因。
 
-**动态（opus）匿名能解析公开动态，但不保证全部。** 实测匿名请求 `detail` 对公开动态返回 `code 0`，带 wbi 签名的 `feed/space` 仍返回 `-101 账号未登录`。所以不填 Cookie 也能出卡，只是仅粉丝可见、受限或命中风控的动态会失败。想全覆盖就填 `SESSDATA`；填了仍报错，说明该值已过期（约半年），重新取一次即可。其余八类——视频、番剧、直播、专栏、评论、UP 空间、音频、短链——匿名全部可用。
+**动态（opus）不是"全部都能解析"。** 公开动态匿名可用，仅粉丝可见、受限或命中风控的会返回「账号未登录」，这类要么填 `SESSDATA`，要么不解析。逐项对照见 [Cookie 与登录态](#cookie-与登录态)。其余八类——视频、番剧、直播、专栏、评论、UP 空间、音频、短链——匿名全部可用。
 
 **评论解析只认带 `comment_root_id` 的链接。** 普通 `#reply123456` 锚点无法还原到接口参数。
 

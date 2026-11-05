@@ -173,10 +173,10 @@
     "hint": "一般无需修改。Cookie 只影响动态与评论的完整性，不配置也能解析大部分内容。",
     "items": {
       "cookie_sessdata": {
-        "description": "B站 Cookie（SESSDATA，仅动态需要）",
+        "description": "B站 Cookie（SESSDATA，只有受限动态需要）",
         "type": "string",
         "default": "",
-        "hint": "只在解析“动态”时有用，视频／番剧／直播／专栏／评论／UP 空间／音频都不需要，不解析动态请留空。取值：浏览器登录 bilibili.com → F12 → Application → Cookies → SESSDATA。它会以明文存于插件配置，建议用小号，约半年过期且过期不提醒。"
+        "hint": "公开动态匿名就能解析，只有“仅粉丝可见／受限／命中风控”的动态才需要它。视频／番剧／直播／专栏／评论／UP 空间／音频一律不需要，不解析动态请留空。取值：浏览器登录 bilibili.com → F12 → Application → Cookies → SESSDATA。它会以明文存于插件配置，建议用小号，约半年过期且过期不提醒。"
       },
       "proxy_url": {
         "description": "代理地址",
