@@ -65,7 +65,9 @@ apt-get update && apt-get install -y fonts-noto-cjk
 
 ### 解析类型
 
-`types` 分组下十个开关，默认全开：`video` `bangumi` `live` `article` `opus` `space` `audio` `comment` `short_link` `json_card`。
+`types` 分组下十个开关，除 `opus`（动态）外默认全开：`video` `bangumi` `live` `article` `space` `audio` `comment` `short_link` `json_card`。
+
+`opus` 默认关闭，因为 B 站动态接口强制要求登录，没填 Cookie 时必然失败；要解析动态请先填 `cookie_sessdata` 再打开这一项。
 
 关掉某一类后，该类链接完全不触发，不会出现"解析了一半"的状态。
 
@@ -77,7 +79,7 @@ apt-get update && apt-get install -y fonts-noto-cjk
 
 | 配置 | 说明 |
 |---|---|
-| `cookie_sessdata` | 可选的 `SESSDATA`，只附加到 B 站域名。不配也能解析大部分内容 |
+| `cookie_sessdata` | **仅解析动态时需要**，其余类型一律不需要，不解析动态就留空 |
 | `proxy_url` | 直连被墙或被风控时使用。SOCKS 需额外装 `aiohttp-socks` |
 | `request_timeout` | 单次接口超时，默认 10 秒 |
 | `blocked_groups` | 这些群完全不启用插件 |
@@ -107,7 +109,7 @@ apt-get update && apt-get install -y fonts-noto-cjk
 
 **卡片里的链接不可点。** 图片是位图，没有超链接能力。所以 `reply_mode: card_text` 默认会在图后面补一条带原始地址的文字，这是这个默认值存在的原因。
 
-**动态（opus）需要 Cookie 才完整。** B 站对动态接口有风控，未配置 `SESSDATA` 时可能返回 `-352` 或只给简略数据。视频、番剧、专栏、音频不需要 Cookie。
+**动态（opus）必须登录，没有"看一半"的可能。** 实测带完整 wbi 签名请求 `feed/space` 与 `detail` 均返回 `-101 账号未登录`，所以这一项默认关闭。其余八类——视频、番剧、直播、专栏、评论、UP 空间、音频、短链——匿名全部可用，不需要 Cookie。填了 `SESSDATA` 仍报错，说明该值已过期（约半年），重新取一次即可。
 
 **评论解析只认带 `comment_root_id` 的链接。** 普通 `#reply123456` 锚点无法还原到接口参数。
 
@@ -124,7 +126,7 @@ apt-get update && apt-get install -y fonts-noto-cjk
 ## 开发
 
 ```bash
-# 单元测试（93 个用例，纯离线）
+# 单元测试（100 个用例，纯离线）
 python -m unittest discover -s tests -v
 
 # 加载冒烟：不启动 AstrBot，验证 @filter / metadata / html_render 的用法正确

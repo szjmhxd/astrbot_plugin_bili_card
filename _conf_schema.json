@@ -67,10 +67,10 @@
         "hint": "解析 bilibili.com/read/cv 链接。"
       },
       "opus": {
-        "description": "动态",
+        "description": "动态（需登录）",
         "type": "bool",
-        "default": true,
-        "hint": "解析 bilibili.com/opus/ 与 t.bilibili.com/ 链接。注意：B 站对动态接口有风控，未配置 Cookie 时可能只拿到简略数据。"
+        "default": false,
+        "hint": "解析 bilibili.com/opus/ 与 t.bilibili.com/ 链接。默认关闭：B 站动态接口强制要求登录，未填 Cookie 时必然返回“账号未登录”。要用请先填下面的 SESSDATA 再打开本项。"
       },
       "space": {
         "description": "UP 主空间",
@@ -154,10 +154,10 @@
     "hint": "一般无需修改。Cookie 只影响动态与评论的完整性，不配置也能解析大部分内容。",
     "items": {
       "cookie_sessdata": {
-        "description": "B站 Cookie（SESSDATA）",
+        "description": "B站 Cookie（SESSDATA，仅动态需要）",
         "type": "string",
         "default": "",
-        "hint": "可选。填入浏览器登录后的 SESSDATA 值，可解锁动态完整正文、评论及部分受限内容。仅会附加到 B 站域名请求。"
+        "hint": "只在解析“动态”时有用，视频／番剧／直播／专栏／评论／UP 空间／音频都不需要，不解析动态请留空。取值：浏览器登录 bilibili.com → F12 → Application → Cookies → SESSDATA。它会以明文存于插件配置，建议用小号，约半年过期且过期不提醒。"
       },
       "proxy_url": {
         "description": "代理地址",

@@ -37,7 +37,7 @@ from .core import (
     retarget_from_url,
 )
 
-PLUGIN_VERSION = "v1.0.2"
+PLUGIN_VERSION = "v1.0.3"
 
 ALL_TYPES = (
     "video",
@@ -90,6 +90,14 @@ class BiliCardPlugin(Star):
         # 冷却表：(会话, 内容指纹) -> 上次解析时间
         self._cooldown: dict[tuple[str, str], float] = {}
         self._cooldown_sweep_at = 0.0
+        if (
+            "opus" in self._enabled_types()
+            and not str(self._opt("advanced", "cookie_sessdata", "") or "").strip()
+        ):
+            logger.warning(
+                "[bili_card] 已开启「动态」解析但未填 SESSDATA，"
+                "B 站一定会返回“账号未登录”。要么填 Cookie，要么在配置里关掉动态。"
+            )
         logger.info("[bili_card] 插件已加载，版本 %s", PLUGIN_VERSION)
 
     # ------------------------------------------------------------------
@@ -106,7 +114,8 @@ class BiliCardPlugin(Star):
             return default
 
     def _enabled_types(self) -> set[str]:
-        return {t for t in ALL_TYPES if bool(self._opt("types", t, True))}
+        # 缺省时只有「动态」按关闭处理：它强制要求登录，默认开着只会报错
+        return {t for t in ALL_TYPES if bool(self._opt("types", t, t != "opus"))}
 
     def _blocked(self, event: AstrMessageEvent) -> bool:
         blocked = self._opt("advanced", "blocked_groups", []) or []
