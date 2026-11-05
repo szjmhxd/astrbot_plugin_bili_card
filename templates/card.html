@@ -16,6 +16,7 @@
     --faint: #9aa3b2;
     --line: #eef0f5;
     --cell: #fafbfd;
+    --quote: #f6f7fa;
     --shadow: 0 6px 28px rgba(17, 20, 30, 0.09);
   }
   .dark {
@@ -25,6 +26,7 @@
     --faint: #6f7788;
     --line: #2b2f39;
     --cell: #22252d;
+    --quote: #23262f;
     --shadow: 0 6px 28px rgba(0, 0, 0, 0.45);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -186,6 +188,68 @@
     letter-spacing: 0.5px;
   }
 
+  /* ---------- 热门评论 ---------- */
+  .cmts {
+    margin-top: 16px;
+    border-top: 1px dashed var(--line);
+    padding-top: 12px;
+    display: flex;
+    flex-direction: column;
+  }
+  .cmts .hd {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+    font-size: 11.5px;
+    color: var(--faint);
+    letter-spacing: 0.6px;
+  }
+  .cmts .hd::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+  /* 每条评论独立成块：白底上的 1px 分隔线几乎看不见，靠底色区分更可靠 */
+  .cmt {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    padding: 9px 12px;
+    background: var(--quote);
+    border-radius: 10px;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  .cmt + .cmt { margin-top: 6px; }
+  .cmt .who {
+    flex: 0 0 auto;
+    max-width: 128px;
+    color: var(--accent);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cmt .say {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .cmt .up {
+    flex: 0 0 auto;
+    min-width: 20px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+
   /* ---------- 标签 ---------- */
   .tags { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 7px; }
   .tag {
@@ -281,6 +345,20 @@
         <div class="stat">
           <div class="v">{{ s.value | e }}</div>
           <div class="k">{{ s.label | e }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {# ---------- 热门评论 ---------- #}
+      {% if c.comments %}
+      <div class="cmts">
+        <div class="hd">热门评论</div>
+        {% for m in c.comments %}
+        <div class="cmt">
+          <span class="who">{{ m.user | e }}</span>
+          <span class="say">{{ m.text | e }}</span>
+          {% if m.like %}<span class="up">{{ m.like | e }}</span>{% endif %}
         </div>
         {% endfor %}
       </div>

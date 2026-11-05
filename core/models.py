@@ -44,6 +44,19 @@ class Stat:
 
 
 @dataclass
+class Comment:
+    """一条热门评论。
+
+    只保留渲染需要的三样东西：谁说的、说了什么、多少赞。
+    楼层、时间、回复数在群聊场景里没有价值，放进卡片只会挤掉正文。
+    """
+
+    user: str
+    text: str
+    like: str = ""
+
+
+@dataclass
 class CardData:
     """一张卡片的全部渲染数据。
 
@@ -60,6 +73,7 @@ class CardData:
     author_link: str = ""
     desc: str = ""
     stats: list[Stat] = field(default_factory=list)
+    comments: list[Comment] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     link: str = ""
     link_label: str = "打开链接"

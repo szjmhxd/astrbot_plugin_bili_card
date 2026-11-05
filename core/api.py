@@ -23,7 +23,7 @@ from typing import Any
 
 import aiohttp
 
-from .models import BiliError, CardData, Stat
+from .models import BiliError, CardData, Comment, Stat
 from .wbi import WbiKeyCache, enc_wbi
 
 UA = (
@@ -149,9 +149,11 @@ class BiliClient:
         sessdata: str = "",
         proxy_url: str = "",
         timeout: int = 10,
+        comment_count: int = 3,
         logger: logging.Logger | None = None,
     ) -> None:
         self._sessdata = (sessdata or "").strip()
+        self._comment_count = max(0, min(int(comment_count), 5))
         self._proxy = (proxy_url or "").strip()
         self._timeout = max(3, int(timeout))
         self._log = logger or logging.getLogger(__name__)
@@ -355,6 +357,42 @@ class BiliClient:
 
     # ---- 视频 ----
 
+    # ---- 评论 ----
+
+    async def _top_comments(self, oid: Any) -> list[Comment]:
+        """取热门评论。
+
+        评论是锦上添花：接口挂了、被风控了、视频关评论了，都只返回空列表，
+        不能让整张卡片跟着失败。
+        """
+        limit = self._comment_count
+        if limit <= 0 or not oid:
+            return []
+        try:
+            data = await self._request_json(
+                f"{API}/x/v2/reply",
+                {"type": 1, "oid": oid, "sort": 2, "ps": limit, "pn": 1},
+            )
+        except BiliError as exc:
+            self._log.debug("热门评论获取失败：%s", exc.message)
+            return []
+
+        out: list[Comment] = []
+        for row in ((data.get("data") or {}).get("replies") or [])[:limit]:
+            text = (((row.get("content") or {}).get("message")) or "").strip()
+            if not text:
+                continue
+            out.append(
+                Comment(
+                    user=((row.get("member") or {}).get("uname")) or "匿名用户",
+                    text=_clip(text, 120),
+                    like=fmt_num(row.get("like")),
+                )
+            )
+        return out
+
+    # ---- 视频 ----
+
     async def fetch_video(self, key: str, page: str = "1", **_kw: Any) -> CardData:
         params = {"bvid": key} if key.upper().startswith("BV") else {"aid": key.lstrip("avAV")}
         data = await self._request_json(f"{API}/x/web-interface/view", params)
@@ -383,12 +421,20 @@ class BiliClient:
         if total_p > 1:
             link += f"?p={p_index}"
 
+        # 封面、头像、热评互不依赖，并发取，避免串行多等两轮往返
+        cover, avatar, comments = await asyncio.gather(
+            self.inline_image(d.get("pic") or "", COVER_SIZE),
+            self.inline_image(owner.get("face") or "", AVATAR_SIZE),
+            self._top_comments(d.get("aid")),
+        )
+
         return CardData(
             kind="video",
             title=_clip(d.get("title"), 120),
             subtitle=subtitle,
-            cover=await self.inline_image(d.get("pic") or "", COVER_SIZE),
-            avatar=await self.inline_image(owner.get("face") or "", AVATAR_SIZE),
+            cover=cover,
+            avatar=avatar,
+            comments=comments,
             author=owner.get("name") or "",
             author_link=f"https://space.bilibili.com/{owner.get('mid')}"
             if owner.get("mid")

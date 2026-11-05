@@ -13,7 +13,11 @@
       "reply_mode": {
         "description": "回复形态",
         "type": "string",
-        "options": ["card_text", "card_only", "text_only"],
+        "options": [
+          "card_text",
+          "card_only",
+          "text_only"
+        ],
         "default": "card_text",
         "hint": "card_text：卡片图 + 一条带链接的文字（推荐）；card_only：只发卡片图；text_only：只发文字，不渲染图片（渲染服务不可用时的退路）。"
       },
@@ -127,6 +131,18 @@
         "default": true,
         "hint": "关闭后不显示播放、点赞、投币等数据行。"
       },
+      "show_comments": {
+        "description": "显示热门评论",
+        "type": "bool",
+        "default": true,
+        "hint": "在数据区下方列出 3 条热评，让群友不用点开就知道大家在说什么。评论取不到时自动省略，不影响卡片。"
+      },
+      "comments_count": {
+        "description": "评论条数",
+        "type": "int",
+        "default": 3,
+        "hint": "抓取几条热评，0 表示完全不抓取。建议 2~3 条：每多一条卡片就高一截，图在群里会被压小。"
+      },
       "show_desc": {
         "description": "显示简介/正文",
         "type": "bool",
@@ -142,7 +158,10 @@
       "theme": {
         "description": "配色",
         "type": "string",
-        "options": ["light", "dark"],
+        "options": [
+          "light",
+          "dark"
+        ],
         "default": "light",
         "hint": "light 浅色卡片（默认，适合日间群聊）；dark 深色卡片。"
       }

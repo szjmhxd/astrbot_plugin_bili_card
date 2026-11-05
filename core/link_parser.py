@@ -159,6 +159,12 @@ def _unescape_card_text(raw: str) -> str:
     # 反复解实体，应对 "&amp;amp;" 这类双重转义
     for _ in range(2):
         text = html.unescape(text)
+    # 有的卡片把目标地址整个百分号编码塞进另一个 URL 的查询串里，
+    # 只解一次不够：外层参数里还可能是编码过的内层地址。
+    for _ in range(2):
+        if "%2F" not in text.upper() and "%3A" not in text.upper():
+            break
+        text = urllib.parse.unquote(text)
     return text
 
 
@@ -167,8 +173,12 @@ def extract_from_card(raw: str, enabled: set[str]) -> list[LinkMatch]:
 
     卡片没有统一格式，策略是：
     先看已知字段值里有没有站内链接，再对整段文本跑一遍通用正则。
+
+    这里刻意**不做**"原文必须出现 bilibili 字样"之类的预判：手机端转发的
+    卡片常常只有一串 b23.tv 或 bili2233.cn，连标题都不含站名，一旦提前返回
+    就整张卡片被丢掉。只要最终没解析出链接，代价也只是一次正则扫描。
     """
-    if not raw or ("b23.tv" not in raw and "bilibili" not in raw.lower()):
+    if not raw:
         return []
 
     text = _unescape_card_text(raw)
@@ -178,9 +188,9 @@ def extract_from_card(raw: str, enabled: set[str]) -> list[LinkMatch]:
         for m in re.finditer(rf'"{key}"\s*:\s*"([^"]+)"', text):
             candidates.append(m.group(1))
 
-    # 字段抽取没结果时，退化为全文扫描
-    if not candidates:
-        candidates.append(text)
+    # 白名单字段可能只匹配到跳转壳（如 qqdocurl 指向 qun.qq.com），
+    # 真正的站内地址藏在别的字段里，所以全文扫描必须始终参与。
+    candidates.append(text)
 
     seen: set[str] = set()
     result: list[LinkMatch] = []

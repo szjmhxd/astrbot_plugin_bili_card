@@ -266,6 +266,10 @@ async def _run() -> None:
     check("模板是 Jinja 语法", "{{ c.title | e }}" in tmpl)
     check("文本插值全部转义", "{{ c.title }}" not in tmpl and "{{ c.desc }}" not in tmpl)
     check("渲染数据带 c 键", "c" in data and data["c"]["theme"] == "light")
+    # 模板把主题类挂在 <body> 上、写成 {{ theme }}（顶层变量）。
+    # 少传这一项不会报错，只会让深色主题静默失效——所以必须显式校验。
+    check("主题以顶层变量传入", data.get("theme") == data["c"]["theme"])
+    check("评论开关已接线", "comments" in data["c"])
     check("渲染为 PNG 且透明底", options["type"] == "png" and options["omit_background"] is True)
 
     print("[4] 冷却去重")

@@ -48,7 +48,9 @@ def build_context(
     show_avatar: bool = True,
     show_stats: bool = True,
     show_desc: bool = True,
+    show_comments: bool = True,
     desc_max_chars: int = 96,
+    comment_max_chars: int = 60,
 ) -> dict:
     """生成模板上下文。返回的 dict 直接作为 Jinja2 的渲染数据。"""
 
@@ -108,6 +110,21 @@ def build_context(
     else:
         cols = 3
 
+    # 评论只留两行：卡片高度一旦超过一屏，图在群里就被压得看不清了
+    comments = (
+        [
+            {
+                "user": _truncate(c.user, 16) or "匿名用户",
+                "text": _truncate(" ".join(c.text.split()), comment_max_chars),
+                "like": c.like,
+            }
+            for c in card.comments[:5]
+        ]
+        if show_comments
+        else []
+    )
+    comments = [c for c in comments if c["text"]]
+
     return {
         "theme": "dark" if theme == "dark" else "light",
         "badge": card.badge,
@@ -124,6 +141,7 @@ def build_context(
         "desc": _truncate(card.desc, desc_max_chars) if show_desc else "",
         "stats": stats,
         "stat_cols": cols,
+        "comments": comments,
         "tags": tags,
         "link": card.link,
         "link_label": card.link_label or card.link,
@@ -148,6 +166,9 @@ def plain_text(card: CardData) -> str:
         lines.append("  ".join(f"{s.label} {s.value}" for s in card.stats))
     if card.tags:
         lines.append("  ".join(f"#{t}" for t in card.tags))
+    for c in card.comments[:2]:
+        like = f"（{c.like} 赞）" if c.like else ""
+        lines.append(f"热评 @{c.user}{like}：{' '.join(c.text.split())}")
     if card.link:
         lines.append(card.link)
     return "\n".join(x for x in lines if x)

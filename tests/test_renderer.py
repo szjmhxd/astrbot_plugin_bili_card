@@ -6,7 +6,7 @@
 
 import unittest
 
-from core.models import CardData, Stat
+from core.models import CardData, Comment, Stat
 from core.renderer import build_context, plain_text
 
 
@@ -160,6 +160,53 @@ class TestText(unittest.TestCase):
 
     def test_theme_fallback(self):
         self.assertEqual(build_context(make_video(), theme="weird")["theme"], "light")
+
+
+class TestComments(unittest.TestCase):
+    def _card(self, n: int = 3) -> CardData:
+        card = make_video()
+        card.comments = [
+            Comment(user=f"用户{i}", text=f"第{i}条评论", like=str(i)) for i in range(n)
+        ]
+        return card
+
+    def test_comments_in_context(self):
+        ctx = build_context(self._card())
+        self.assertEqual([c["user"] for c in ctx["comments"]], ["用户0", "用户1", "用户2"])
+
+    def test_switch_off(self):
+        self.assertEqual(build_context(self._card(), show_comments=False)["comments"], [])
+
+    def test_cap_at_five(self):
+        self.assertEqual(len(build_context(self._card(8))["comments"]), 5)
+
+    def test_long_text_truncated(self):
+        card = make_video()
+        card.comments = [Comment(user="某人", text="很长的评论" * 40)]
+        text = build_context(card, comment_max_chars=20)["comments"][0]["text"]
+        self.assertLessEqual(len(text), 20)
+        self.assertTrue(text.endswith("…"))
+
+    def test_newlines_collapsed(self):
+        card = make_video()
+        card.comments = [Comment(user="某人", text="第一行\n第二行")]
+        self.assertEqual(build_context(card)["comments"][0]["text"], "第一行 第二行")
+
+    def test_empty_text_dropped(self):
+        card = make_video()
+        card.comments = [Comment(user="某人", text="   "), Comment(user="别人", text="有内容")]
+        self.assertEqual(len(build_context(card)["comments"]), 1)
+
+    def test_plain_text_mentions_hot_comment(self):
+        self.assertIn("热评", plain_text(self._card()))
+
+
+class TestTheme(unittest.TestCase):
+    def test_dark(self):
+        self.assertEqual(build_context(make_video(), theme="dark")["theme"], "dark")
+
+    def test_unknown_falls_back_to_light(self):
+        self.assertEqual(build_context(make_video(), theme="whatever")["theme"], "light")
 
 
 class TestPlainText(unittest.TestCase):

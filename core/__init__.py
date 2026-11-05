@@ -5,13 +5,14 @@
 
 from .api import BiliClient, fmt_duration, fmt_num
 from .link_parser import detect_links, extract_from_card, retarget_from_url
-from .models import BiliError, CardData, LinkMatch, Stat
+from .models import BiliError, CardData, Comment, LinkMatch, Stat
 from .renderer import build_context, load_template, plain_text
 
 __all__ = [
     "BiliClient",
     "BiliError",
     "CardData",
+    "Comment",
     "LinkMatch",
     "Stat",
     "build_context",

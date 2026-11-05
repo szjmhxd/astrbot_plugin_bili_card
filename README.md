@@ -73,7 +73,9 @@ apt-get update && apt-get install -y fonts-noto-cjk
 
 ### 卡片内容
 
-`show_cover` `show_avatar` `show_stats` `show_desc` `desc_max_chars`（默认 96）、`theme`（`light` / `dark`）。
+`show_cover` `show_avatar` `show_stats` `show_comments` `comments_count`（默认 3）、`show_desc` `desc_max_chars`（默认 96）、`theme`（`light` / `dark`）。
+
+`comments_count` 是抓取条数，`0` 表示完全不抓。评论只取 B 站「按热度」排序的前几条，取不到时整块自动省略，不影响卡片其余部分。每多一条卡片就高一截，群聊里建议 2~3 条。
 
 ### 高级
 
@@ -96,6 +98,8 @@ apt-get update && apt-get install -y fonts-noto-cjk
 ## 卡片样式
 
 六格数据（视频）用两行三列，四格（音频）用两行两列，两格（直播）一行铺满——不会出现半截空行。
+
+视频卡片会带上三条热评（`show_comments`），让群友不点开也能看出大家在讨论什么。热评与封面、头像同时并发请求，不会额外多等一轮。
 
 | 评论（无封面） | 音频（四格） |
 |---|---|
@@ -126,7 +130,7 @@ apt-get update && apt-get install -y fonts-noto-cjk
 ## 开发
 
 ```bash
-# 单元测试（100 个用例，纯离线）
+# 单元测试（119 个用例，纯离线）
 python -m unittest discover -s tests -v
 
 # 加载冒烟：不启动 AstrBot，验证 @filter / metadata / html_render 的用法正确

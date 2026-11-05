@@ -37,7 +37,7 @@ from .core import (
     retarget_from_url,
 )
 
-PLUGIN_VERSION = "v1.0.3"
+PLUGIN_VERSION = "v1.0.4"
 
 ALL_TYPES = (
     "video",
@@ -85,6 +85,7 @@ class BiliCardPlugin(Star):
             sessdata=str(self._opt("advanced", "cookie_sessdata", "") or ""),
             proxy_url=str(self._opt("advanced", "proxy_url", "") or ""),
             timeout=int(self._opt("advanced", "request_timeout", 10) or 10),
+            comment_count=int(self._opt("content", "comments_count", 3) or 0),
             logger=logger,
         )
         # 冷却表：(会话, 内容指纹) -> 上次解析时间
@@ -172,8 +173,13 @@ class BiliCardPlugin(Star):
 
         if "json_card" in enabled:
             for raw in self._card_raws(event):
-                if "bilibili" in raw.lower() or "b23.tv" in raw:
-                    candidates.extend(extract_from_card(raw, enabled))
+                found = extract_from_card(raw, enabled)
+                if found:
+                    candidates.extend(found)
+                elif bool(self._opt("advanced", "debug", False)):
+                    # 卡片没解析出东西时把原文打出来，否则只能靠猜
+                    # （手机端转发的卡片格式五花八门，需要真实样本才能对齐）
+                    logger.info("[bili_card] 卡片未识别出链接，原文前 400 字：%s", raw[:400])
 
         seen: set[str] = set()
         result: list[LinkMatch] = []
@@ -249,6 +255,7 @@ class BiliCardPlugin(Star):
             "show_cover": bool(self._opt("content", "show_cover", True)),
             "show_avatar": bool(self._opt("content", "show_avatar", True)),
             "show_stats": bool(self._opt("content", "show_stats", True)),
+            "show_comments": bool(self._opt("content", "show_comments", True)),
             "show_desc": bool(self._opt("content", "show_desc", True)),
             "desc_max_chars": int(self._opt("content", "desc_max_chars", 96) or 96),
         }
@@ -269,7 +276,11 @@ class BiliCardPlugin(Star):
         options["timeout"] = timeout * 1000  # Playwright 的 timeout 单位是毫秒
 
         started = time.perf_counter()
-        image = await self.html_render(load_template(), {"c": ctx}, options=options)
+        # theme 必须在顶层：模板把主题类挂在 <body> 上，写成 {{ theme }}，
+        # 只放进 c 里会导致 body class 永远为空、深色主题静默失效。
+        image = await self.html_render(
+            load_template(), {"c": ctx, "theme": ctx["theme"]}, options=options
+        )
         cost = time.perf_counter() - started
         if cost > 8:
             # 慢到用户会以为没反应，留个线索方便排查是哪一段慢
