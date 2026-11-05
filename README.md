@@ -4,7 +4,7 @@
 
 覆盖八类内容：视频、番剧、直播、专栏、动态、UP 主空间、音频、视频评论。
 
-![视频卡片](docs/sample-video.png)
+![视频卡片](docs/sample-video.jpg)
 
 ## 和其他 B 站解析插件的区别
 
@@ -103,11 +103,11 @@ apt-get update && apt-get install -y fonts-noto-cjk
 
 | 评论（无封面） | 音频（四格） |
 |---|---|
-| ![评论卡片](docs/sample-comment.png) | ![音频卡片](docs/sample-audio.png) |
+| ![评论卡片](docs/sample-comment.jpg) | ![音频卡片](docs/sample-audio.jpg) |
 
 深色主题（`theme: dark`）：
 
-![深色卡片](docs/sample-dark.png)
+![深色卡片](docs/sample-dark.jpg)
 
 ## 已知限制
 
