@@ -37,7 +37,7 @@ from .core import (
     retarget_from_url,
 )
 
-PLUGIN_VERSION = "v1.0.4"
+PLUGIN_VERSION = "v1.0.5"
 
 ALL_TYPES = (
     "video",
@@ -96,8 +96,9 @@ class BiliCardPlugin(Star):
             and not str(self._opt("advanced", "cookie_sessdata", "") or "").strip()
         ):
             logger.warning(
-                "[bili_card] 已开启「动态」解析但未填 SESSDATA，"
-                "B 站一定会返回“账号未登录”。要么填 Cookie，要么在配置里关掉动态。"
+                "[bili_card] 已开启「动态」解析但未填 SESSDATA。公开动态匿名可以解析，"
+                "但仅粉丝可见、受限或命中风控的动态会返回“账号未登录”。"
+                "想全覆盖就填 Cookie，否则可以关掉动态。"
             )
         logger.info("[bili_card] 插件已加载，版本 %s", PLUGIN_VERSION)
 

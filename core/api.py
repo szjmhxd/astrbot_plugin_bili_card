@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from html import unescape
 from typing import Any
 
 import aiohttp
@@ -197,6 +198,7 @@ class BiliClient:
         params: dict[str, Any] | None = None,
         *,
         wbi: bool = False,
+        ok_codes: tuple[int, ...] = (0,),
     ) -> dict[str, Any]:
         params = dict(params or {})
         if wbi:
@@ -217,7 +219,7 @@ class BiliClient:
             raise BiliError("B 站返回了无法解析的数据") from exc
 
         code = data.get("code", 0)
-        if code != 0:
+        if code not in ok_codes:
             raise BiliError(_ERR_TEXT.get(code, f"B 站接口错误（code={code}）"))
         return data
 
@@ -228,7 +230,10 @@ class BiliClient:
         async with self._wbi_lock:
             if self._wbi.ready and not self._wbi.expired:
                 return
-            data = await self._request_json(f"{API}/x/web-interface/nav")
+            # nav 在未登录时固定返回 -101，但 data.wbi_img 照样给，
+            # 所以这里不能把 -101 当失败——否则匿名用户会被报"需要登录"，
+            # 而这个错误其实是签名密钥环节产生的，跟内容权限无关。
+            data = await self._request_json(f"{API}/x/web-interface/nav", ok_codes=(0, -101))
             img_url = (((data.get("data") or {}).get("wbi_img") or {}).get("img_url")) or ""
             sub_url = (((data.get("data") or {}).get("wbi_img") or {}).get("sub_url")) or ""
             if not img_url or not sub_url:
@@ -359,11 +364,16 @@ class BiliClient:
 
     # ---- 评论 ----
 
-    async def _top_comments(self, oid: Any) -> list[Comment]:
+    async def _top_comments(self, oid: Any, ctype: int = 1) -> list[Comment]:
         """取热门评论。
 
-        评论是锦上添花：接口挂了、被风控了、视频关评论了，都只返回空列表，
+        评论是锦上添花：接口挂了、被风控了、评论关了，都只返回空列表，
         不能让整张卡片跟着失败。
+
+        ``ctype`` 是 B 站评论区的业务类型，和内容形态一一对应：
+        1=视频/番剧单集，12=专栏，17=纯图文的动态。动态要按
+        ``basic.comment_type`` 与 ``basic.comment_id_str`` 取，不能拿动态 id 硬套 17
+        ——转载专栏的动态，评论其实挂在 cv 号上。
         """
         limit = self._comment_count
         if limit <= 0 or not oid:
@@ -371,7 +381,7 @@ class BiliClient:
         try:
             data = await self._request_json(
                 f"{API}/x/v2/reply",
-                {"type": 1, "oid": oid, "sort": 2, "ps": limit, "pn": 1},
+                {"type": ctype, "oid": oid, "sort": 2, "ps": limit, "pn": 1},
             )
         except BiliError as exc:
             self._log.debug("热门评论获取失败：%s", exc.message)
@@ -379,12 +389,14 @@ class BiliClient:
 
         out: list[Comment] = []
         for row in ((data.get("data") or {}).get("replies") or [])[:limit]:
-            text = (((row.get("content") or {}).get("message")) or "").strip()
+            # 接口里的正文是 HTML 实体转义过的（&#34; &gt; 之类），这里先还原；
+            # 模板输出时还会再过一遍 |e，不还原就会把 &amp;#34; 印在卡片上。
+            text = unescape(((row.get("content") or {}).get("message")) or "").strip()
             if not text:
                 continue
             out.append(
                 Comment(
-                    user=((row.get("member") or {}).get("uname")) or "匿名用户",
+                    user=unescape(((row.get("member") or {}).get("uname")) or "匿名用户"),
                     text=_clip(text, 120),
                     like=fmt_num(row.get("like")),
                 )
@@ -499,11 +511,18 @@ class BiliClient:
         if new_ep:
             tags.append(new_ep)
 
+        # 番剧评论区 oid 是 ep_id（不是 season_id），和视频同属 type=1
+        cover, comments = await asyncio.gather(
+            self.inline_image(cover_url, COVER_SIZE),
+            self._top_comments(ep_id, 1),
+        )
+
         return CardData(
             kind="bangumi",
             title=_clip(r.get("title"), 120),
             subtitle=subtitle,
-            cover=await self.inline_image(cover_url, COVER_SIZE),
+            cover=cover,
+            comments=comments,
             desc=_clip(r.get("evaluate"), 200),
             stats=[
                 Stat("播放", fmt_num(stat.get("views"))),
@@ -576,12 +595,21 @@ class BiliClient:
         cover_url = d.get("banner_url") or (images[0] if images else "")
         stats = d.get("stats") or {}
         mid = d.get("author_mid")
+        cv_id = key[2:] if key.lower().startswith("cv") else key
+
+        # 专栏评论区 type=12，oid 是 cv 号
+        cover, avatar, comments = await asyncio.gather(
+            self.inline_image(cover_url, COVER_SIZE),
+            self.inline_image(d.get("author_face") or "", AVATAR_SIZE),
+            self._top_comments(cv_id, 12),
+        )
 
         return CardData(
             kind="article",
             title=_clip(d.get("title"), 120),
-            cover=await self.inline_image(cover_url, COVER_SIZE),
-            avatar=await self.inline_image(d.get("author_face") or "", AVATAR_SIZE),
+            cover=cover,
+            avatar=avatar,
+            comments=comments,
             author=d.get("author_name") or "",
             author_link=f"https://space.bilibili.com/{mid}" if mid else "",
             desc=_clip(d.get("summary"), 200),
@@ -652,14 +680,31 @@ class BiliClient:
             tags.append("直播")
 
         mid = author.get("mid")
+
+        # 动态的评论区不总挂在动态 id 上：转载专栏的动态，评论实际在 cv 号上，
+        # 所以必须用接口回的 comment_type / comment_id_str，不能拿动态 id 硬套 type=17。
+        basic = item.get("basic") or {}
+        try:
+            ctype = int(basic.get("comment_type") or 0)
+        except (TypeError, ValueError):
+            ctype = 0
+        cid = basic.get("comment_id_str") or ""
+
+        cover, avatar, comments = await asyncio.gather(
+            self.inline_image(cover_url, COVER_SIZE),
+            self.inline_image(author.get("face") or "", AVATAR_SIZE),
+            self._top_comments(cid, ctype or 1),
+        )
+
         return CardData(
             kind="opus",
-            title=_clip(extra_title or desc_text or "（无正文）", 120),
-            cover=await self.inline_image(cover_url, COVER_SIZE),
-            avatar=await self.inline_image(author.get("face") or "", AVATAR_SIZE),
+            title=_clip(unescape(extra_title or desc_text) or "（无正文）", 120),
+            cover=cover,
+            avatar=avatar,
+            comments=comments,
             author=author.get("name") or "",
             author_link=f"https://space.bilibili.com/{mid}" if mid else "",
-            desc=_clip(desc_text if extra_title else "", 200),
+            desc=_clip(unescape(desc_text) if extra_title else "", 200),
             stats=[
                 Stat("点赞", fmt_num((stat.get("like") or {}).get("count"))),
                 Stat("评论", fmt_num((stat.get("comment") or {}).get("count"))),
