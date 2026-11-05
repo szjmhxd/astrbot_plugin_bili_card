@@ -120,6 +120,25 @@ def _with_thumb_suffix(url: str, width: int, height: int) -> str:
     return f"{base}{spec}{sep}{query}"
 
 
+def _looks_like_image(blob: bytes) -> bool:
+    """按文件头判断是不是一张完整的图片。
+
+    半截数据也会被当成图片塞进模板，然后在渲染端变成空白——
+    这里挡一道，宁可退回无封面，也不要交一张坏图给渲染服务。
+    """
+    if len(blob) < 12:
+        return False
+    if blob.startswith(b"\xff\xd8\xff"):  # JPEG
+        return True
+    if blob.startswith(b"\x89PNG\r\n\x1a\n"):  # PNG
+        return True
+    if blob.startswith(b"GIF8"):  # GIF
+        return True
+    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":  # WebP
+        return True
+    return blob[4:8] == b"ftyp"  # AVIF / HEIF
+
+
 class BiliClient:
     """所有网络访问的唯一出口。"""
 
@@ -263,16 +282,29 @@ class BiliClient:
                     if resp.status != 200:
                         continue
                     if resp.content_length and resp.content_length > _MAX_IMAGE_BYTES:
+                        self._log.debug("图片过大，跳过 %s", candidate)
                         continue
-                    blob = await resp.content.read(_MAX_IMAGE_BYTES + 1)
+                    # 必须用 resp.read() 读完整响应体。
+                    # resp.content.read(n) 只保证"拿到至少 1 字节"，会返回第一个
+                    # 可用数据块（实测 16KB），大图被截断后仍然是一段合法前缀，
+                    # 渲染出来就是空白封面；小头像恰好一个块读完，所以看起来正常。
+                    blob = await resp.read()
                     if not blob or len(blob) > _MAX_IMAGE_BYTES:
                         continue
                     mime = (resp.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
             except (TimeoutError, aiohttp.ClientError) as exc:
                 self._log.debug("图片下载失败 %s: %s", candidate, exc)
                 continue
-            if mime.startswith("image/"):
-                return blob, mime
+            if not mime.startswith("image/"):
+                continue
+            if not _looks_like_image(blob):
+                self._log.warning(
+                    "图片数据不完整，已跳过（%s，%d 字节）",
+                    candidate.rsplit("/", 1)[-1][-40:],
+                    len(blob),
+                )
+                continue
+            return blob, mime
         return b"", ""
 
     # ------------------------------------------------------------------

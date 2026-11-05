@@ -124,7 +124,7 @@ apt-get update && apt-get install -y fonts-noto-cjk
 ## 开发
 
 ```bash
-# 单元测试（89 个用例，纯离线）
+# 单元测试（93 个用例，纯离线）
 python -m unittest discover -s tests -v
 
 # 加载冒烟：不启动 AstrBot，验证 @filter / metadata / html_render 的用法正确

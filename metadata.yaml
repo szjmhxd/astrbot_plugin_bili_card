@@ -2,7 +2,7 @@ name: astrbot_plugin_bili_card
 display_name: B站卡片解析
 desc: 自动识别聊天中的 B 站链接（视频/番剧/直播/专栏/动态/UP空间/音频/评论），渲染成图文卡片并附可复制链接。卡片由 AstrBot 自带的文转图服务出图，插件本身不调用任何 AI 模型、也不需要额外安装渲染依赖。
 short_desc: B站八类链接解析，渲染图文卡片。
-version: v1.0.1
+version: v1.0.2
 author: szjm
 repo: https://github.com/szjmhxd/astrbot_plugin_bili_card
 astrbot_version: ">=4.16"

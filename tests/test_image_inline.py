@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import unittest
+from typing import Self
 
-from core.api import BiliClient, _normalize_image_url, _with_thumb_suffix
+from core.api import BiliClient, _looks_like_image, _normalize_image_url, _with_thumb_suffix
 
 
 class NormalizeImageUrlTest(unittest.TestCase):
@@ -88,6 +89,106 @@ class InlineImageTest(unittest.IsolatedAsyncioTestCase):
         client._download_image = fake_download  # type: ignore[method-assign]
         await client.inline_image("//i0.hdslb.com/a.jpg", (96, 96))
         self.assertEqual(seen["size"], (96, 96))
+
+
+class LooksLikeImageTest(unittest.TestCase):
+    def test_accepts_common_formats(self):
+        self.assertTrue(_looks_like_image(b"\xff\xd8\xff" + b"\x00" * 20))
+        self.assertTrue(_looks_like_image(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20))
+        self.assertTrue(_looks_like_image(b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 20))
+        self.assertTrue(_looks_like_image(b"GIF89a" + b"\x00" * 20))
+
+    def test_rejects_html_and_empty(self):
+        # 图床出错时可能返回一段 HTML 错误页，不能当图片内联
+        self.assertFalse(_looks_like_image(b"<!doctype html><html>"))
+        self.assertFalse(_looks_like_image(b""))
+        self.assertFalse(_looks_like_image(b"RIFF"))
+
+
+class _FakeContent:
+    """复刻 aiohttp 的 StreamReader 语义：read(n) 只返回第一个可用数据块。"""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            return b"".join(self._chunks)
+        return self._chunks[0][:n]
+
+
+class _FakeResponse:
+    def __init__(self, chunks: list[bytes], mime: str = "image/webp", status: int = 200) -> None:
+        self._chunks = chunks
+        self.status = status
+        self.headers = {"Content-Type": mime}
+        self.content_length = sum(len(c) for c in chunks)
+        self.content = _FakeContent(chunks)
+
+    async def read(self) -> bytes:
+        return b"".join(self._chunks)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc) -> bool:
+        return False
+
+
+class _FakeSession:
+    def __init__(self, resp: _FakeResponse) -> None:
+        self._resp = resp
+        self.requested: list[str] = []
+
+    def get(self, url: str, **_kwargs) -> _FakeResponse:
+        self.requested.append(url)
+        return self._resp
+
+
+class DownloadFullBodyTest(unittest.IsolatedAsyncioTestCase):
+    """回归：大图必须整段读完，不能被第一个 16KB 数据块截断。
+
+    `resp.content.read(n)` 只保证拿到"至少 1 字节"，39KB 的封面会只拿到 16384 字节，
+    剩下的变成一段坏图 —— 渲染端表现为封面整块空白。
+    """
+
+    async def test_multi_chunk_image_not_truncated(self):
+        blob = b"RIFF\x00\x00\x00\x00WEBP" + b"x" * 40000
+        chunks = [blob[i : i + 16384] for i in range(0, len(blob), 16384)]
+        self.assertGreater(len(chunks), 1, "构造的测试数据必须多于一个数据块")
+
+        session = _FakeSession(_FakeResponse(chunks))
+        client = BiliClient()
+
+        async def fake_session():
+            return session
+
+        client._ensure_session = fake_session  # type: ignore[method-assign]
+        got, mime = await client._download_image("https://i0.hdslb.com/a.jpg", (720, 405))
+
+        self.assertEqual(mime, "image/webp")
+        self.assertEqual(len(got), len(blob), "整张图必须完整读回")
+        self.assertEqual(got, blob)
+
+    async def test_falls_back_to_original_when_thumb_is_html(self):
+        html = _FakeResponse([b"<!doctype html><html>not an image</html>"], mime="text/html")
+        original = _FakeResponse([b"\xff\xd8\xff" + b"j" * 300], mime="image/jpeg")
+
+        client = BiliClient()
+        responses = [html, original]
+
+        class _Session:
+            def get(self, url, **_kwargs):
+                return responses.pop(0)
+
+        async def fake_session():
+            return _Session()
+
+        client._ensure_session = fake_session  # type: ignore[method-assign]
+        got, mime = await client._download_image("https://i0.hdslb.com/a.jpg", (720, 405))
+
+        self.assertEqual(mime, "image/jpeg", "缩略图不可用时应退回原图")
+        self.assertTrue(got.startswith(b"\xff\xd8\xff"))
 
 
 if __name__ == "__main__":

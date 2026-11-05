@@ -37,7 +37,7 @@ from .core import (
     retarget_from_url,
 )
 
-PLUGIN_VERSION = "v1.0.1"
+PLUGIN_VERSION = "v1.0.2"
 
 ALL_TYPES = (
     "video",
