@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncGenerator
@@ -37,7 +38,7 @@ from .core import (
     retarget_from_url,
 )
 
-PLUGIN_VERSION = "v1.0.6"
+PLUGIN_VERSION = "v1.0.7"
 
 ALL_TYPES = (
     "video",
@@ -63,6 +64,37 @@ RENDER_OPTIONS = {
 # 封面内联串的硬上限。按 720×405 的 webp 取图只有 40KB 左右（base64 约 54KB），
 # 超过这个量级说明图床没有按尺寸返回、拿的是原图，宁可不要封面也别让整段模板被截断。
 _MAX_COVER_CHARS = 350_000
+
+# 出图的分次预算，按 render_timeout 的比例切。
+#
+# 为什么不是"一次等到底"：官方 t2i 端点是个池子，AstrBot 只会在请求**报错**时换端点，
+# 碰到"慢但最终成功"的端点就会一直等。实测同一时刻两个官方端点分别是 1.7s 与 3.2s，
+# 而高峰期出现过单次 48s（服务端排队）。所以这里自己设单次上限：超时就重试一次——
+# AstrBot 每次调用都会重新洗牌端点池，重试大概率换到另一个端点。
+#
+# 第一次给得宽（正常 1~3s 就回，慢一点也别误杀），第二次收紧：
+# 它是用来"换个端点再试"的，不该再等一个完整周期。
+_FIRST_ATTEMPT_RATIO = 0.6
+_MIN_CAP_SECONDS = 3
+_MAX_BUDGET_SECONDS = 120
+
+# 每次尝试在服务端超时之外多留一点余量：让服务端先到点、返回干净的 HTTP 错误，
+# 而不是由我们这边取消（取消拿不到任何信息）。这部分也要算进总预算里。
+_ATTEMPT_MARGIN_SECONDS = 1
+
+
+def _attempt_caps(budget: int) -> list[int]:
+    """把总预算切成单次上限：先给六成，剩下的留给重试。
+
+    返回值不含 ``_ATTEMPT_MARGIN_SECONDS``，即
+    ``sum(返回值) + 次数×余量`` 才是真实的墙钟上限，正好等于预算。
+    总预算夹在 8~120 秒之间，单次不低于 3 秒（再低正常出图都可能被误杀）。
+    """
+    budget = max(8, min(int(budget), _MAX_BUDGET_SECONDS))
+    usable = budget - _ATTEMPT_MARGIN_SECONDS * 2
+    first = max(_MIN_CAP_SECONDS, int(usable * _FIRST_ATTEMPT_RATIO))
+    first = min(first, usable - _MIN_CAP_SECONDS)
+    return [first, usable - first]
 
 
 class BiliCardPlugin(Star):
@@ -272,21 +304,46 @@ class BiliCardPlugin(Star):
             content["show_cover"] = False
             ctx = build_context(card, **content)
 
-        options = dict(RENDER_OPTIONS)
-        timeout = int(self._opt("advanced", "render_timeout", 20) or 20)
-        options["timeout"] = timeout * 1000  # Playwright 的 timeout 单位是毫秒
+        tmpl = load_template()
+        payload = {"c": ctx, "theme": ctx["theme"]}
 
-        started = time.perf_counter()
-        # theme 必须在顶层：模板把主题类挂在 <body> 上，写成 {{ theme }}，
-        # 只放进 c 里会导致 body class 永远为空、深色主题静默失效。
-        image = await self.html_render(
-            load_template(), {"c": ctx, "theme": ctx["theme"]}, options=options
-        )
-        cost = time.perf_counter() - started
-        if cost > 8:
-            # 慢到用户会以为没反应，留个线索方便排查是哪一段慢
-            logger.info("[bili_card] 卡片渲染耗时 %.1fs（%s）", cost, card.kind)
-        return image
+        budget = int(self._opt("advanced", "render_timeout", 20) or 20)
+        caps = _attempt_caps(budget)
+
+        last_reason = "渲染服务未返回"
+        for attempt, cap in enumerate(caps, 1):
+            options = dict(RENDER_OPTIONS)
+            # 让服务端在自己的超时点收手、返回干净的 HTTP 错误，
+            # 而不是被我们这边取消、什么信息都拿不到。
+            options["timeout"] = cap * 1000
+            started = time.perf_counter()
+            try:
+                image = await asyncio.wait_for(
+                    self.html_render(tmpl, payload, options=options),
+                    timeout=cap + _ATTEMPT_MARGIN_SECONDS,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                last_reason = f"渲染服务超过 {cap}s 未返回"
+                logger.warning(
+                    "[bili_card] 出图超时（第 %d/%d 次，上限 %ds）%s",
+                    attempt,
+                    len(caps),
+                    cap,
+                    "，重试一次（端点池会重新洗牌）" if attempt < len(caps) else "",
+                )
+                continue
+
+            cost = time.perf_counter() - started
+            if cost > 5 or attempt > 1:
+                logger.info(
+                    "[bili_card] 卡片出图 %.1fs（%s，第 %d 次）",
+                    cost,
+                    card.kind,
+                    attempt,
+                )
+            return image
+
+        raise TimeoutError(last_reason)
 
     def _text_line(self, card: CardData) -> str:
         """卡片后补发的文字：标题 + 原始链接，方便直接复制。"""
@@ -331,6 +388,7 @@ class BiliCardPlugin(Star):
                 logger.debug("[bili_card] 冷却中，跳过 %s", marker)
                 continue
 
+            fetch_started = time.perf_counter()
             try:
                 card = await self.client.fetch(
                     target.kind,
@@ -347,6 +405,12 @@ class BiliCardPlugin(Star):
                 errors.append("解析时发生未知错误")
                 logger.exception("[bili_card] 解析异常 %s: %s", marker, exc)
                 continue
+
+            # 取数和出图是两个独立的慢点：一个是 B 站接口 + 图片内联，
+            # 一个是文转图服务。分开计时，下次抱怨慢时能直接指明是哪一段。
+            fetch_cost = time.perf_counter() - fetch_started
+            if fetch_cost > 3:
+                logger.info("[bili_card] 取数耗时 %.1fs（%s）", fetch_cost, target.kind)
 
             done += 1
 

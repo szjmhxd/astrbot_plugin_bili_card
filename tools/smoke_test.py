@@ -299,7 +299,44 @@ async def _run() -> None:
     out4 = [r async for r in plugin.on_any_message(ev4)]
     check("能从 dict 中抽出链接", bool(out4))
 
-    print("[7] 异常兜底")
+    print("[7] 出图预算与重试")
+    # 官方 t2i 端点池里有快有慢，而 AstrBot 只在请求**报错**时换端点，
+    # 碰到"慢但最终成功"的端点会一直等（现场出现过 48s）。所以插件自己切预算：
+    # 第一次用六成，超时后换端点再用剩下的四成。
+    caps = plugin_main._attempt_caps(20)
+    wall = sum(caps) + 2 * plugin_main._ATTEMPT_MARGIN_SECONDS
+    check(f"总预算切成两次 {caps}，墙钟 {wall}s 不超 20s", caps == [10, 8] and wall == 20)
+    check("递减：第一次给得比第二次宽", caps[0] > caps[1])
+    check("最小预算不会被切到 3 秒以下", all(c >= 3 for c in plugin_main._attempt_caps(6)))
+    check("超大预算被夹在 120 秒内", sum(plugin_main._attempt_caps(9999)) <= 120)
+
+    attempts = {"n": 0}
+    asked: list[int] = []
+
+    async def flaky_render(tmpl, data, options=None, **kw):
+        attempts["n"] += 1
+        asked.append(options["timeout"])
+        if attempts["n"] == 1:
+            raise asyncio.TimeoutError
+        return "/tmp/smoke-card.png"
+
+    plugin.html_render = flaky_render
+    path = await plugin._render_card(CardData(kind="video", title="t", link="x"))
+    check(f"超时后重试成功（共 {attempts['n']} 次）", path.endswith(".png") and attempts["n"] == 2)
+    check(f"每次请求的超时预算递减 {asked}", len(asked) == 2 and asked[0] > asked[1])
+
+    async def always_slow(tmpl, data, options=None, **kw):
+        raise asyncio.TimeoutError
+
+    plugin.html_render = always_slow
+    try:
+        await plugin._render_card(CardData(kind="video", title="t", link="x"))
+    except TimeoutError:
+        check("两次都超时则抛出，由上层退回文字", True)
+    else:
+        check("两次都超时则抛出，由上层退回文字", False)
+
+    print("[8] 异常兜底")
 
     async def boom(*a, **k):
         raise BiliError("测试错误")
@@ -309,13 +346,13 @@ async def _run() -> None:
     out5 = [r async for r in plugin.on_any_message(ev5)]
     check(f"失败给出提示 {[r.payload for r in out5]}", bool(out5) and "测试错误" in out5[0].payload)
 
-    print("[8] 群屏蔽")
+    print("[9] 群屏蔽")
     config["advanced"]["blocked_groups"] = ["123456"]
     ev6 = FakeEvent("https://www.bilibili.com/video/BV1aa411c7mG")
     out6 = [r async for r in plugin.on_any_message(ev6)]
     check("屏蔽群内无响应", out6 == [])
 
-    print("[9] 资源释放")
+    print("[10] 资源释放")
     await plugin.terminate()
     check("HTTP 会话已关闭", plugin.client._session is None)
 
