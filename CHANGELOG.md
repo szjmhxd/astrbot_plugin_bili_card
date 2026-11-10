@@ -1,5 +1,22 @@
 # 更新日志
 
+## v1.0.8
+
+插件市场上架审核打回，原因是 `core/api.py` 用了标准库的 `logging`。规范要求日志器
+只能从 `astrbot.api` 取，这条没有例外。功能本身没有问题，但写法必须改。
+
+- **删掉 `import logging`**，同时删掉 `logging.Logger` 类型注解和
+  `logger or logging.getLogger(__name__)` 兜底。改用一个只声明 `debug/info/warning`
+  的 `LoggerLike` 协议描述入参
+- **`logger` 改成必传参数，不再有默认值。** 原先的兜底分支在线上确实走不到，
+  但它让"漏传 logger"变成一个静默行为——插件日志会绕开局端配置跑到标准库 root 上。
+  现在漏传直接 `TypeError`，在加载阶段就暴露
+- `main.py` 本来就是传 `astrbot.api.logger` 进来的，调用侧无需改动
+- 新增 `tests/test_logging_policy.py`：扫描 `main.py` 与 `core/*.py` 的源码，
+  出现 `import logging` / `from logging import` / `logging.getLogger` 任一即失败，
+  并断言 `BiliClient()` 无参构造会抛 `TypeError`。这条规则以前靠人记，现在靠测试
+- 单测 131 → 133
+
 ## v1.0.7
 
 线上出现单张卡片出图 48 秒。根因不在取数，也不在模板体积，而是**文转图端点排队**——

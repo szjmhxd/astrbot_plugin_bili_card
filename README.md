@@ -175,7 +175,7 @@ B 站绝大多数公开接口在未登录状态下就能用，所以这个插件
 ## 开发
 
 ```bash
-# 单元测试（131 个用例，纯离线）
+# 单元测试（133 个用例，纯离线）
 python -m unittest discover -s tests -v
 
 # 加载冒烟：不启动 AstrBot，验证 @filter / metadata / html_render 的用法正确
@@ -188,6 +188,11 @@ python tools/preview.py --theme dark --kind video --shot
 # 静态检查
 ruff check . && ruff format --check .
 ```
+
+两条约定由测试固定，不用靠记：
+
+- **日志只用 `astrbot.api.logger`**，不 import 标准库 `logging`。`core/api.py` 的 `BiliClient` 把 logger 作为必传参数，漏传会直接 `TypeError` 而不是静默回落到标准库；`tests/test_logging_policy.py` 会扫描源码，发现 `import logging` / `logging.getLogger` 就失败。
+- **`@filter` 只写在 `Star` 子类里**，写在别的模块里会被框架静默丢弃，冒烟测试会因此报错。
 
 `tools/smoke_test.py` 用桩替身模拟 AstrBot 的核心对象，跑通「消息 → 识别 → 取数据 → 渲染 → 出图+文字」整条链路。改完 `main.py` 先跑它，比在 AstrBot 里反复重载快得多。
 

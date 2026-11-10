@@ -16,6 +16,7 @@ from typing import Any
 
 from core.api import _ERR_TEXT, BiliClient
 from core.models import BiliError
+from tests.stubs import QUIET_LOGGER
 
 
 def reply_row(user: str, text: str, like: int = 10) -> dict[str, Any]:
@@ -38,6 +39,7 @@ class FakeClient(BiliClient):
     """把网络出口换成记录器，其余逻辑全部走真实代码。"""
 
     def __init__(self, responses: dict[str, dict[str, Any]], **kwargs: Any) -> None:
+        kwargs.setdefault("logger", QUIET_LOGGER)
         super().__init__(**kwargs)
         self.responses = responses
         self.calls: list[tuple[str, dict[str, Any]]] = []

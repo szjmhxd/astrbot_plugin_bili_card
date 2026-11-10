@@ -18,9 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import logging
 from html import unescape
-from typing import Any
+from typing import Any, Protocol
 
 import aiohttp
 
@@ -141,23 +140,38 @@ def _looks_like_image(blob: bytes) -> bool:
     return blob[4:8] == b"ftyp"  # AVIF / HEIF
 
 
+class LoggerLike(Protocol):
+    """本模块用到的日志接口，正式运行时传入 ``astrbot.api.logger``。
+
+    插件规范要求日志只能经由 AstrBot 的 logger 输出，禁止使用标准库 ``logging``。
+    因此这里**刻意不提供默认值**：漏传会立刻 ``TypeError``，而不是悄悄换一个
+    日志来源、让插件日志跑到别处去。
+    """
+
+    def debug(self, msg: str, *args: Any, **kwargs: Any) -> None: ...
+
+    def info(self, msg: str, *args: Any, **kwargs: Any) -> None: ...
+
+    def warning(self, msg: str, *args: Any, **kwargs: Any) -> None: ...
+
+
 class BiliClient:
     """所有网络访问的唯一出口。"""
 
     def __init__(
         self,
         *,
+        logger: LoggerLike,
         sessdata: str = "",
         proxy_url: str = "",
         timeout: int = 10,
         comment_count: int = 3,
-        logger: logging.Logger | None = None,
     ) -> None:
         self._sessdata = (sessdata or "").strip()
         self._comment_count = max(0, min(int(comment_count), 5))
         self._proxy = (proxy_url or "").strip()
         self._timeout = max(3, int(timeout))
-        self._log = logger or logging.getLogger(__name__)
+        self._log = logger
         self._session: aiohttp.ClientSession | None = None
         self._wbi = WbiKeyCache()
         self._wbi_lock = asyncio.Lock()

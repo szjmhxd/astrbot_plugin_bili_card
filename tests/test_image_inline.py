@@ -10,6 +10,7 @@ import unittest
 from typing import Self
 
 from core.api import BiliClient, _looks_like_image, _normalize_image_url, _with_thumb_suffix
+from tests.stubs import QUIET_LOGGER
 
 
 class NormalizeImageUrlTest(unittest.TestCase):
@@ -54,7 +55,7 @@ class ThumbSuffixTest(unittest.TestCase):
 
 class InlineImageTest(unittest.IsolatedAsyncioTestCase):
     async def test_returns_data_uri_and_caches(self):
-        client = BiliClient()
+        client = BiliClient(logger=QUIET_LOGGER)
         calls: list[tuple[str, tuple[int, int] | None]] = []
 
         async def fake_download(url, size):
@@ -70,7 +71,7 @@ class InlineImageTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1, "同一尺寸的图片应命中缓存，不重复下载")
 
     async def test_download_failure_returns_empty(self):
-        client = BiliClient()
+        client = BiliClient(logger=QUIET_LOGGER)
 
         async def fake_download(url, size):
             return b"", ""
@@ -79,7 +80,7 @@ class InlineImageTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await client.inline_image("https://i0.hdslb.com/a.jpg", (96, 96)), "")
 
     async def test_size_passed_through(self):
-        client = BiliClient()
+        client = BiliClient(logger=QUIET_LOGGER)
         seen = {}
 
         async def fake_download(url, size):
@@ -158,7 +159,7 @@ class DownloadFullBodyTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(chunks), 1, "构造的测试数据必须多于一个数据块")
 
         session = _FakeSession(_FakeResponse(chunks))
-        client = BiliClient()
+        client = BiliClient(logger=QUIET_LOGGER)
 
         async def fake_session():
             return session
@@ -174,7 +175,7 @@ class DownloadFullBodyTest(unittest.IsolatedAsyncioTestCase):
         html = _FakeResponse([b"<!doctype html><html>not an image</html>"], mime="text/html")
         original = _FakeResponse([b"\xff\xd8\xff" + b"j" * 300], mime="image/jpeg")
 
-        client = BiliClient()
+        client = BiliClient(logger=QUIET_LOGGER)
         responses = [html, original]
 
         class _Session:
